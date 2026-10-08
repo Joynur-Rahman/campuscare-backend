@@ -1,0 +1,13 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: campuscare-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - .env
+    restart: unless-stopped

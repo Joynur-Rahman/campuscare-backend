@@ -61,6 +61,7 @@ campuse_care-backend/
 ├── tests/
 │   └── test_app.py              # Integration tests
 ├── Dockerfile                   # Production-ready Docker containerfile
+├── docker-compose.yml           # Compose service definition
 ├── seed.py                      # Database seeder for departments & categories
 └── requirements.txt             # Python project dependencies
 ```
