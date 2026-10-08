@@ -55,7 +55,7 @@ campuse_care-backend/
 │   │   ├── notifications.py     # Notification dispatcher service
 │   │   └── repositories.py      # Data access layer (Supabase tables & RPCs)
 │   └── main.py                  # FastAPI application entry point & middleware
-├── docs/                        # Project architectural documentation
+├── CampusCare_SRS_v1.0.pdf      # Software Requirements Specification (SRS)
 ├── supabase/
 │   └── schema.sql               # Full PostgreSQL schema, tables, policies & RPCs
 ├── tests/
