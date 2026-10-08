@@ -115,23 +115,52 @@ CLOUDINARY_UPLOAD_FOLDER=campuscare
 
 ---
 
-## 🏃 Running the Backend
+## 🏃 Running the Application
 
-### Option 1: Using Docker (Recommended)
+### Option 1: Full-Stack Docker Compose (Backend + Frontend)
 
-From the project root:
+To run both the **FastAPI backend** and **React frontend** together:
+
+1. Place `docker-compose.yml` in the parent directory outside `campuse_care-backend` where both frontend and backend repositories reside:
+   ```text
+   project-root/
+   ├── docker-compose.yml
+   ├── campuse_care-backend/
+   └── campuscare-react/ (or campuscare-frontend/)
+   ```
+2. Ensure both `.env` files are configured in their respective folders (`campuse_care-backend/.env` and `campuscare-react/.env`).
+3. From the parent directory, launch both containers:
+   ```bash
+   # Build and start both services in the background
+   docker compose up -d --build
+
+   # View live logs
+   docker compose logs -f
+
+   # Check container status
+   docker compose ps
+   ```
+
+- **Backend API**: `http://localhost:8000` (Swagger docs: `http://localhost:8000/docs`)
+- **Frontend App**: `http://localhost:5173`
+
+---
+
+### Option 2: Running Backend Standalone with Docker
+
+To build and run only the backend container:
 
 ```bash
-# Start backend and database services
-docker compose up -d --build backend
+cd campuse_care-backend
 
-# View live logs
-docker compose logs -f backend
+# Build the Docker image
+docker build -t campuscare-backend .
+
+# Run the container with environment variables
+docker run -d -p 8000:8000 --env-file .env --name campuscare-backend campuscare-backend
 ```
 
-The API will be live at **`http://localhost:8000`**.
-
-### Option 2: Local Python Environment
+### Option 3: Local Python Environment
 
 ```bash
 # 1. Create and activate a virtual environment
