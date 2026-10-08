@@ -1,0 +1,16 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+firebase-debug.log
+firestore-debug.log
+data/
+service-account*.json
+*.pem
+.temp/
