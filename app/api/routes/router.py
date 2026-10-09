@@ -1,14 +1,38 @@
-
+import hashlib
+import json
+import uuid
+from datetime import datetime, timezone
 from typing import Annotated
+
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from svix.webhooks import Webhook, WebhookVerificationError
-import uuid
-from datetime import datetime, timezone
+
 from app.core.config import settings
 from app.core.cloudinary import delete_media, signed_upload_parameters, upload_media
-from app.schemas import *
-from app.api.deps import current_supabase_user, require_supabase_role
+from app.core.supabase import get_supabase
+from app.schemas import (
+    AcknowledgeRequest,
+    AdminUserCreate,
+    AppointmentProposal,
+    AppointmentResponse,
+    AssignmentRequest,
+    FeedbackCreate,
+    LoginRequest,
+    MessageCreate,
+    NoticeCreate,
+    Role,
+    RoleUpdate,
+    RoleVerification,
+    SettingsUpdate,
+    TicketAction,
+    TicketCreate,
+    TicketStatus,
+    TicketUpdate,
+    UserCreate,
+)
+from app.api.deps import current_supabase_user, require_supabase_role, resolve_or_link_user
 from app.core.clerk import get_current_claims
 from app.services.notifications import notification_service
 from app.services.repositories import (
@@ -54,7 +78,6 @@ def password_reset(request: Request) -> None:
 
 @router.get("/api/auth/me")
 def me(email: str | None = None, name: str | None = None, claims: dict = Depends(get_current_claims)) -> dict:
-    from app.api.deps import resolve_or_link_user
     user_id = claims["sub"]
     email_hint = email or claims.get("email")
     return resolve_or_link_user(user_id, email_hint=email_hint, name_hint=name)
@@ -95,7 +118,6 @@ async def clerk_webhook(request: Request) -> dict[str, str]:
     
     existing = user_repo.get_by_clerk_id(clerk_id)
     if not existing and email:
-        from app.core.supabase import get_supabase
         sb_existing = get_supabase().table("users").select("*").eq("email", email).maybe_single().execute()
         if sb_existing and sb_existing.data:
             existing = sb_existing.data
@@ -525,8 +547,6 @@ def update_user_role(user_id: str, data: RoleUpdate, admin: dict = Depends(requi
 
 @router.post("/api/admin/users", status_code=201)
 def create_user_by_admin(data: AdminUserCreate, admin: dict = Depends(require_supabase_role(Role.administrator))) -> dict:
-    import httpx
-    from app.core.supabase import get_supabase
     email = str(data.email).lower().strip()
     existing = get_supabase().table("users").select("*").eq("email", email).maybe_single().execute()
     if existing and existing.data:
@@ -586,8 +606,6 @@ def end_notice(notice_id: str, admin: dict = Depends(require_supabase_role(Role.
     result = notice_repo.end_notice(notice_id)
     return result[0] if result else notice
 
-import json
-
 @router.get("/api/audit-log/export")
 def export_audit_logs(admin: dict = Depends(require_supabase_role(Role.administrator))):
     audit_repo.log_action(admin["clerk_id"], "export_logs", "audit_logs", "all", {})
@@ -604,9 +622,6 @@ def apply_retention_policy(older_than_days: int = Query(90, ge=1), admin: dict =
     audit_repo.log_action(admin["clerk_id"], "apply_retention", "audit_logs", "bulk", {"days": older_than_days})
     result = audit_repo.delete_older_than(older_than_days)
     return {"message": f"Deleted audit logs older than {older_than_days} days", "deleted_count": len(result)}
-
-import hashlib
-import time
 
 @router.post("/api/webhooks/cloudinary")
 async def cloudinary_webhook(request: Request) -> dict[str, str]:
