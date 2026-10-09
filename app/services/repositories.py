@@ -72,10 +72,15 @@ class TicketRepository:
     def get_history(self, ticket_id):
         return get_supabase().table("ticket_history").select("*").eq("ticket_id", ticket_id).order("created_at").execute().data or []
 
-    def update_status_with_history(self, ticket_id, status, remarks, actor_id):
-        get_supabase().rpc("update_ticket_with_history", {
-            "p_ticket_id": ticket_id, "p_status": status, "p_remarks": remarks, "p_actor_id": actor_id
-        }).execute()
+    def update_status_with_history(self, ticket_id, status, remarks, actor_id, attachments=None):
+        payload = {
+            "p_ticket_id": ticket_id,
+            "p_status": status,
+            "p_remarks": remarks or "",
+            "p_actor_id": actor_id,
+            "p_attachments": attachments or []
+        }
+        return get_supabase().rpc("update_ticket_with_history", payload).execute().data
 
     def assign_ticket(self, ticket_id, assigned_to, actor_id):
         return get_supabase().rpc("assign_ticket_with_history", {
@@ -83,11 +88,26 @@ class TicketRepository:
         }).execute().data
 
     def acknowledge_ticket(self, ticket_id, technician_id, name):
-        return get_supabase().table("tickets").update({
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = get_supabase().table("tickets").update({
+            "status": "in_progress",
             "acknowledged_by": technician_id, 
             "acknowledged_name": name, 
-            "acknowledged_at": datetime.now(timezone.utc).isoformat()
+            "acknowledged_at": now_iso,
+            "updated_at": now_iso
         }).eq("id", ticket_id).execute().data
+
+        try:
+            get_supabase().table("ticket_history").insert({
+                "ticket_id": ticket_id,
+                "status": "in_progress",
+                "remarks": f"Started work (Acknowledged by {name or 'Technician'})",
+                "changed_by": technician_id
+            }).execute()
+        except Exception:
+            pass
+
+        return res
 
     def add_follower(self, ticket_id, user_id):
         get_supabase().table("ticket_followers").upsert({"ticket_id": ticket_id, "user_id": user_id}, on_conflict="ticket_id,user_id").execute()

@@ -222,8 +222,10 @@ def acknowledge_ticket(ticket_id: str, data: AcknowledgeRequest, user: dict = De
         raise HTTPException(404, "Ticket not found")
     if user.get("role") == Role.staff and ticket.get("assigned_to") != user["clerk_id"]:
         raise HTTPException(403, "Only the assigned staff member can acknowledge this complaint")
-    result = ticket_repo.acknowledge_ticket(ticket_id, data.technician_id, data.name)
-    return result[0] if result else {"ticket_id": ticket_id, "acknowledged_by": data.technician_id}
+    old_status = ticket.get("status")
+    ticket_repo.acknowledge_ticket(ticket_id, data.technician_id, data.name)
+    notification_service.notify_status_change(ticket_id, ticket["owner_id"], old_status, TicketStatus.in_progress.value)
+    return get_ticket(ticket_id, user)
 
 @router.post("/api/assignments/tickets/{ticket_id}/assign")
 def assign_ticket(ticket_id: str, data: AssignmentRequest, admin: dict = Depends(require_supabase_role(Role.administrator))) -> dict:
@@ -274,8 +276,10 @@ def resolve_ticket(ticket_id: str, data: TicketAction, user: dict = Depends(curr
         raise HTTPException(400, "Cannot resolve an unassigned complaint")
     if ticket["status"] == TicketStatus.resolved.value:
         raise HTTPException(400, "Complaint is already resolved")
+    if user.get("role") == Role.staff.value and ticket.get("assigned_to") != user["clerk_id"]:
+        raise HTTPException(403, "Only the assigned staff member can resolve this complaint")
         
-    ticket_repo.update_status_with_history(ticket_id, TicketStatus.resolved.value, data.remarks, user["clerk_id"], data.attachments)
+    ticket_repo.update_status_with_history(ticket_id, TicketStatus.resolved.value, data.remarks or "Resolved by technician", user["clerk_id"], data.attachments)
     notification_service.notify_resolution(ticket_id, ticket["owner_id"])
     return get_ticket(ticket_id, user)
 
