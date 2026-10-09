@@ -25,7 +25,26 @@ class UserRepository:
         return [u["email"] for u in users if u.get("email")]
 
     def get_technicians(self, offset: int, limit: int):
-        return get_supabase().table("users").select("clerk_id, email, full_name, phone, role").eq("role", Role.staff.value).range(offset, offset + limit - 1).execute().data or []
+        techs = get_supabase().table("users").select("clerk_id, email, full_name, phone, role").eq("role", Role.staff.value).range(offset, offset + limit - 1).execute().data or []
+        config = settings_repo.get()
+        duty_statuses = config.get("technician_duty", {}) if isinstance(config, dict) else {}
+        for t in techs:
+            cid = t.get("clerk_id")
+            email = (t.get("email") or "").lower()
+            t["status"] = duty_statuses.get(cid) or duty_statuses.get(email) or "On Duty"
+        return techs
+
+    def update_technician_status(self, tech_id: str, status: str):
+        config = settings_repo.get()
+        if not isinstance(config, dict):
+            config = {}
+        duty_statuses = config.get("technician_duty", {})
+        if not isinstance(duty_statuses, dict):
+            duty_statuses = {}
+        duty_statuses[tech_id] = status
+        config["technician_duty"] = duty_statuses
+        settings_repo.update(config)
+        return {"id": tech_id, "status": status}
 
     def get_all(self, offset: int = 0, limit: int = 50):
         return get_supabase().table("users").select("clerk_id, email, full_name, phone, role, created_at, updated_at").order("created_at", desc=True).range(offset, offset + limit - 1).execute().data or []

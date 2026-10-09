@@ -5,7 +5,16 @@ from app.core.clerk import get_current_claims
 from app.core.config import settings
 from app.core.supabase import get_supabase
 from app.schemas import Role
-from app.services.repositories import user_repo
+from app.services.repositories import settings_repo, user_repo
+
+def _attach_duty(profile: dict | None) -> dict | None:
+    if profile and profile.get("role") == Role.staff.value:
+        config = settings_repo.get()
+        duty_statuses = config.get("technician_duty", {}) if isinstance(config, dict) else {}
+        cid = profile.get("clerk_id")
+        email = (profile.get("email") or "").lower()
+        profile["status"] = duty_statuses.get(cid) or duty_statuses.get(email) or "On Duty"
+    return profile
 
 def fetch_clerk_user(user_id: str) -> dict:
     secret = settings.clerk_secret_key or settings.clerk_webhook_secret
@@ -42,7 +51,7 @@ def resolve_or_link_user(user_id: str, email_hint: str | None = None, name_hint:
                 status_code=403,
                 detail="Public registration is restricted to @iiitg.ac.in accounts. Worker and technician accounts must be created by the Administrator."
             )
-        return profile
+        return _attach_duty(profile)
 
     # 2. Extract email from hints or Clerk API
     email = (email_hint or "").lower().strip()
@@ -81,7 +90,7 @@ def resolve_or_link_user(user_id: str, email_hint: str | None = None, name_hint:
                 except Exception:
                     pass
 
-                return user_repo.get_by_clerk_id(user_id) or pre_created
+                return _attach_duty(user_repo.get_by_clerk_id(user_id) or pre_created)
 
     # 4. If user already had a profile with clerk_id, update email/name if missing
     if profile:
@@ -95,7 +104,7 @@ def resolve_or_link_user(user_id: str, email_hint: str | None = None, name_hint:
                 status_code=403,
                 detail="Public registration is restricted to @iiitg.ac.in accounts. Worker and technician accounts must be created by the Administrator."
             )
-        return profile
+        return _attach_duty(profile)
 
     # 5. Otherwise, new user -> ONLY allow @iiitg.ac.in domain self-signup
     domain_allowed = email and (email.endswith("@iiitg.ac.in") or email.endswith(".iiitg.ac.in"))

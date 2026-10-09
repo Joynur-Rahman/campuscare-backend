@@ -407,6 +407,25 @@ def delete_file(media_id: str, user: dict = Depends(current_supabase_user)) -> d
 def technicians(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), _: dict = Depends(current_supabase_user)) -> list[dict]:
     return user_repo.get_technicians(offset, limit)
 
+@router.put("/api/staff/me/status")
+def update_my_duty_status(data: dict, user: dict = Depends(require_supabase_role(Role.staff, Role.administrator))) -> dict:
+    status = data.get("status", "On Duty")
+    if status not in ("On Duty", "Off Duty"):
+        raise HTTPException(400, "Status must be 'On Duty' or 'Off Duty'")
+    audit_repo.log_action(user["clerk_id"], "update_duty_status", "user", user["clerk_id"], {"status": status})
+    return user_repo.update_technician_status(user["clerk_id"], status)
+
+@router.put("/api/staff/technicians/{tech_id}/status")
+def update_technician_duty_status(tech_id: str, data: dict, user: dict = Depends(current_supabase_user)) -> dict:
+    user_role = user.get("role")
+    if user_role != Role.administrator.value and user.get("clerk_id") != tech_id:
+        raise HTTPException(403, "Cannot change duty status of another technician")
+    status = data.get("status", "On Duty")
+    if status not in ("On Duty", "Off Duty"):
+        raise HTTPException(400, "Status must be 'On Duty' or 'Off Duty'")
+    audit_repo.log_action(user["clerk_id"], "update_duty_status", "user", tech_id, {"status": status})
+    return user_repo.update_technician_status(tech_id, status)
+
 @router.get("/api/messages/me/{user_id}")
 def my_messages(user_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), user: dict = Depends(current_supabase_user)) -> list[dict]:
     if user_id != user["clerk_id"] and user.get("role") != Role.administrator.value:
