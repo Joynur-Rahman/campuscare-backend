@@ -234,6 +234,8 @@ def assign_ticket(ticket_id: str, data: AssignmentRequest, admin: dict = Depends
         raise HTTPException(404, "Ticket not found")
     if ticket["status"] == TicketStatus.resolved.value:
         raise HTTPException(400, "Cannot assign a resolved complaint")
+    if ticket["status"] == TicketStatus.in_progress.value:
+        raise HTTPException(400, "Complaint is currently being fixed by a technician. Cannot reassign while in progress.")
         
     result = ticket_repo.assign_ticket(ticket_id, data.technician_id, admin["clerk_id"])
     if not result:

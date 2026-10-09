@@ -77,10 +77,10 @@ class TicketRepository:
             "p_ticket_id": ticket_id,
             "p_status": status,
             "p_remarks": remarks or "",
-            "p_actor_id": actor_id,
-            "p_attachments": attachments or []
+            "p_actor_id": actor_id
         }
-        return get_supabase().rpc("update_ticket_with_history", payload).execute().data
+        res = get_supabase().rpc("update_ticket_with_history", payload).execute().data
+        return res
 
     def assign_ticket(self, ticket_id, assigned_to, actor_id):
         return get_supabase().rpc("assign_ticket_with_history", {
