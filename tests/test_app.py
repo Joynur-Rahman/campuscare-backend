@@ -53,3 +53,73 @@ def test_documented_core_routes_are_registered() -> None:
     assert "/api/files/upload" in routes
     assert "/api/files/{media_id}" in routes
     assert "/api/files/upload/signature" in routes
+
+
+def test_domain_restriction_rejects_non_iiitg_self_registration(monkeypatch) -> None:
+    from fastapi import HTTPException
+    import pytest
+    from app.api.deps import resolve_or_link_user
+
+    class DummyUserRepo:
+        def get_by_clerk_id(self, uid):
+            return None
+
+    class DummyTable:
+        def select(self, *args):
+            return self
+        def eq(self, *args):
+            return self
+        def maybe_single(self):
+            return self
+        def execute(self):
+            return type("Res", (), {"data": None})()
+
+    class DummySb:
+        def table(self, name):
+            return DummyTable()
+
+    monkeypatch.setattr("app.api.deps.user_repo", DummyUserRepo())
+    monkeypatch.setattr("app.api.deps.get_supabase", lambda: DummySb())
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_or_link_user("user_external", email_hint="outsider@gmail.com")
+    assert exc_info.value.status_code == 403
+    assert "restricted to @iiitg.ac.in" in exc_info.value.detail
+
+
+def test_domain_restriction_allows_pre_created_staff(monkeypatch) -> None:
+    from app.api.deps import resolve_or_link_user
+
+    pre_created_profile = {
+        "clerk_id": "staff_temp_123",
+        "email": "electrician@gmail.com",
+        "full_name": "Electrician Ramesh",
+        "role": "staff"
+    }
+
+    class DummyUserRepo:
+        def get_by_clerk_id(self, uid):
+            return None
+
+    class DummyTable:
+        def select(self, *args):
+            return self
+        def eq(self, *args):
+            return self
+        def maybe_single(self):
+            return self
+        def update(self, *args):
+            return self
+        def execute(self):
+            return type("Res", (), {"data": pre_created_profile})()
+
+    class DummySb:
+        def table(self, name):
+            return DummyTable()
+
+    monkeypatch.setattr("app.api.deps.user_repo", DummyUserRepo())
+    monkeypatch.setattr("app.api.deps.get_supabase", lambda: DummySb())
+
+    result = resolve_or_link_user("clerk_worker_real", email_hint="electrician@gmail.com")
+    assert result["role"] == "staff"
+    assert result["email"] == "electrician@gmail.com"

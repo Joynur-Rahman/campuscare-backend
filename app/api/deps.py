@@ -35,6 +35,13 @@ def resolve_or_link_user(user_id: str, email_hint: str | None = None, name_hint:
     # 1. Direct match by clerk_id
     profile = user_repo.get_by_clerk_id(user_id)
     if profile and profile.get("email"):
+        role = profile.get("role")
+        p_email = (profile.get("email") or "").lower().strip()
+        if role in ("student", "faculty") and not (p_email.endswith("@iiitg.ac.in") or p_email.endswith(".iiitg.ac.in")):
+            raise HTTPException(
+                status_code=403,
+                detail="Public registration is restricted to @iiitg.ac.in accounts. Worker and technician accounts must be created by the Administrator."
+            )
         return profile
 
     # 2. Extract email from hints or Clerk API
@@ -81,9 +88,23 @@ def resolve_or_link_user(user_id: str, email_hint: str | None = None, name_hint:
         if email and not profile.get("email"):
             user_repo.update(user_id, {"email": email, "full_name": profile.get("full_name") or name})
             profile["email"] = email
+        role = profile.get("role")
+        p_email = (profile.get("email") or "").lower().strip()
+        if role in ("student", "faculty") and not (p_email.endswith("@iiitg.ac.in") or p_email.endswith(".iiitg.ac.in")):
+            raise HTTPException(
+                status_code=403,
+                detail="Public registration is restricted to @iiitg.ac.in accounts. Worker and technician accounts must be created by the Administrator."
+            )
         return profile
 
-    # 5. Otherwise, new user -> default student
+    # 5. Otherwise, new user -> ONLY allow @iiitg.ac.in domain self-signup
+    domain_allowed = email and (email.endswith("@iiitg.ac.in") or email.endswith(".iiitg.ac.in"))
+    if not domain_allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Public registration is restricted to @iiitg.ac.in accounts. Worker and technician accounts must be created by the Administrator."
+        )
+
     new_profile = {
         "clerk_id": user_id,
         "email": email,

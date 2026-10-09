@@ -90,10 +90,21 @@ async def clerk_webhook(request: Request) -> dict[str, str]:
     if event_type not in {"user.created", "user.updated"}:
         return {"status": "ignored"}
 
-    email = next((item.get("email_address", "") for item in data.get("email_addresses", []) if item.get("id") == data.get("primary_email_address_id")), "")
+    email = next((item.get("email_address", "") for item in data.get("email_addresses", []) if item.get("id") == data.get("primary_email_address_id")), "").lower().strip()
     phone = next((item.get("phone_number") for item in data.get("phone_numbers", []) if item.get("id") == data.get("primary_phone_number_id")), None)
     
     existing = user_repo.get_by_clerk_id(clerk_id)
+    if not existing and email:
+        from app.core.supabase import get_supabase
+        sb_existing = get_supabase().table("users").select("*").eq("email", email).maybe_single().execute()
+        if sb_existing and sb_existing.data:
+            existing = sb_existing.data
+
+    if not existing:
+        # Only allow auto-provisioning via webhook for official IIITG domain
+        if not (email.endswith("@iiitg.ac.in") or email.endswith(".iiitg.ac.in")):
+            return {"status": "ignored_non_iiitg_domain"}
+
     profile = {
         "clerk_id": clerk_id,
         "email": email,
