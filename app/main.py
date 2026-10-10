@@ -47,6 +47,18 @@ app.include_router(router)
 def root():
     return RedirectResponse(url="/docs")
 
+def get_cors_headers(request: Request) -> dict[str, str]:
+    origin = request.headers.get("origin")
+    allowed = set(settings.allowed_origins + ["http://localhost:5173", "http://127.0.0.1:5173"])
+    if origin and (origin in allowed or settings.app_env == "development"):
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    return {}
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code in (401, 403):
@@ -56,6 +68,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": "HTTPException", "message": str(exc.detail), "details": []},
+        headers=get_cors_headers(request),
     )
 
 @app.exception_handler(RequestValidationError)
@@ -67,6 +80,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(
         status_code=422,
         content={"error": "ValidationError", "message": "Invalid request payload", "details": details},
+        headers=get_cors_headers(request),
     )
 
 @app.exception_handler(Exception)
@@ -77,4 +91,5 @@ async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={"error": "InternalServerError", "message": "An unexpected error occurred", "details": []},
+        headers=get_cors_headers(request),
     )
