@@ -31,7 +31,7 @@ class SecurityHeadersMiddleware:
 
 app.add_middleware(
     TrustedHostMiddleware, 
-    allowed_hosts=["*"] if settings.app_env == "development" else ["campuscare.com", "*.campuscare.com", "*.onrender.com", "localhost", "127.0.0.1"]
+    allowed_hosts=["*"] if settings.app_env.lower() == "development" else ["campuscare.com", "*.campuscare.com", "*.onrender.com", "localhost", "127.0.0.1"]
 )
 app.middleware("http")(SecurityHeadersMiddleware().__call__)
 
@@ -39,6 +39,7 @@ app.middleware("http")(SecurityHeadersMiddleware().__call__)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(set(settings.allowed_origins + ["http://localhost:5173", "http://127.0.0.1:5173"])),
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,10 +51,13 @@ app.include_router(router)
 def root():
     return RedirectResponse(url="/docs")
 
+import re
+
 def get_cors_headers(request: Request) -> dict[str, str]:
     origin = request.headers.get("origin")
     allowed = set(settings.allowed_origins + ["http://localhost:5173", "http://127.0.0.1:5173"])
-    if origin and (origin in allowed or settings.app_env == "development"):
+    is_vercel = bool(origin and re.match(r"^https:\/\/.*\.vercel\.app$", origin))
+    if origin and (origin in allowed or is_vercel or settings.app_env.lower() == "development"):
         return {
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
