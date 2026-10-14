@@ -29,7 +29,10 @@ class SecurityHeadersMiddleware:
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; img-src 'self' data: fastapi.tiangolo.com;"
         return response
 
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"] if settings.app_env == "development" else ["campuscare.com", "*.campuscare.com"])
+app.add_middleware(
+    TrustedHostMiddleware, 
+    allowed_hosts=["*"] if settings.app_env == "development" else ["campuscare.com", "*.campuscare.com", "*.onrender.com", "localhost", "127.0.0.1"]
+)
 app.middleware("http")(SecurityHeadersMiddleware().__call__)
 
 # Add CORSMiddleware last so it wraps all responses (including errors and security headers)
