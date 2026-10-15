@@ -195,7 +195,8 @@ def get_ticket(ticket_id: str, user: dict = Depends(current_supabase_user)) -> d
     is_owner = ticket["owner_id"] == user["clerk_id"]
     
     if user_role in (Role.student.value, Role.faculty.value) and not is_owner:
-        raise HTTPException(403, "You cannot access another user's complaint")
+        if ticket.get("confidential"):
+            raise HTTPException(403, "You cannot access another user's confidential complaint")
     if user_role == Role.staff.value and ticket.get("assigned_to") != user["clerk_id"]:
         raise HTTPException(403, "You can only access assigned complaints")
         
@@ -219,11 +220,12 @@ def unfollow_ticket(ticket_id: str, user: dict = Depends(current_supabase_user))
     return {"ticket_id": ticket_id, "user_id": user["clerk_id"], "status": "unfollowed"}
 
 @router.post("/api/tickets/{ticket_id}/join")
-def join_ticket(ticket_id: str, user: dict = Depends(current_supabase_user)) -> dict[str, str]:
+def join_ticket(ticket_id: str, user: dict = Depends(current_supabase_user)) -> dict:
     if not ticket_repo.get_by_id(ticket_id):
         raise HTTPException(404, "Ticket not found")
     ticket_repo.add_supporter(ticket_id, user["clerk_id"])
-    return {"ticket_id": ticket_id, "user_id": user["clerk_id"], "status": "joined"}
+    count = ticket_repo.get_supporter_count(ticket_id)
+    return {"ticket_id": ticket_id, "user_id": user["clerk_id"], "status": "joined", "count": count}
 
 @router.post("/api/tickets/{ticket_id}/appointment")
 def propose_appointment(ticket_id: str, data: AppointmentProposal, user: dict = Depends(current_supabase_user)) -> dict:
@@ -446,7 +448,7 @@ def get_thread(thread_id: str, user: dict = Depends(current_supabase_user)) -> l
         is_owner = ticket.get("owner_id") == user_id
         is_assigned = ticket.get("assigned_to") == user_id
         is_staff = user.get("role") in (Role.staff.value, Role.administrator.value)
-        if not (is_admin or is_owner or is_assigned or is_staff):
+        if ticket.get("confidential") and not (is_admin or is_owner or is_assigned or is_staff):
             raise HTTPException(403, "Access denied to ticket messages")
     return message_repo.get_thread(thread_id)
 
@@ -475,7 +477,7 @@ def send_message(data: MessageCreate, user: dict = Depends(current_supabase_user
             is_owner = ticket.get("owner_id") == user_id
             is_assigned = ticket.get("assigned_to") == user_id
             is_staff = user.get("role") in (Role.staff.value, Role.administrator.value)
-            if not (is_admin or is_owner or is_assigned or is_staff):
+            if ticket.get("confidential") and not (is_admin or is_owner or is_assigned or is_staff):
                 raise HTTPException(403, "You cannot reply to this ticket thread")
         else:
             thread_messages = message_repo.get_thread(data.thread_id)

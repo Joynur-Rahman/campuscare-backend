@@ -61,17 +61,26 @@ class TicketRepository:
         return result[0] if isinstance(result, list) and result else result
 
     def get_all(self, offset, limit, user_role, user_id):
-        query = get_supabase().table("tickets").select("*")
+        query = get_supabase().table("tickets").select("*, ticket_supporters(user_id)")
         if user_role in (Role.student.value, Role.faculty.value):
-            query = query.eq("owner_id", user_id)
+            query = query.or_(f"confidential.eq.false,owner_id.eq.{user_id}")
         elif user_role == Role.staff.value:
             query = query.eq("assigned_to", user_id)
-        return query.order("created_at", desc=True).range(offset, offset + limit - 1).execute().data or []
+        data = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute().data or []
+        for t in data:
+            supporters = [s["user_id"] for s in t.pop("ticket_supporters", []) if isinstance(s, dict) and "user_id" in s]
+            t["upvoted_by"] = supporters
+            t["upvotes"] = len(supporters) + 1
+        return data
+
+    def get_supporter_count(self, ticket_id):
+        res = get_supabase().table("ticket_supporters").select("user_id", count="exact").eq("ticket_id", ticket_id).execute()
+        return (res.count or 0) + 1
 
     def get_similar(self, q, user_role, user_id):
         query = get_supabase().table("tickets").select("*").in_("status", [TicketStatus.submitted.value, TicketStatus.assigned.value, TicketStatus.in_progress.value]).ilike("title", f"%{q}%")
         if user_role in (Role.student.value, Role.faculty.value):
-            query = query.eq("owner_id", user_id)
+            query = query.or_(f"confidential.eq.false,owner_id.eq.{user_id}")
         return query.order("created_at", desc=True).limit(20).execute().data or []
 
     def get_confidential(self, user_role, user_id):
