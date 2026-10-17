@@ -620,11 +620,36 @@ def create_user_by_admin(data: AdminUserCreate, admin: dict = Depends(require_su
             try:
                 r = httpx.get(
                     f"https://api.clerk.com/v1/users?email_address={email}",
-                    headers={"Authorization": f"Bearer {secret}"},
+                    headers={"Authorization": f"Bearer {secret}", "User-Agent": "CampusCareBackend/1.0"},
                     timeout=5.0
                 )
                 if r.status_code == 200 and r.json():
                     clerk_id = r.json()[0].get("id")
+                else:
+                    parts = str(data.name).split()
+                    first_name = parts[0] if parts else "Staff"
+                    last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+                    init_pw = f"CampusCare@{random.randint(1000, 9999)}!"
+                    cr = httpx.post(
+                        "https://api.clerk.com/v1/users",
+                        headers={
+                            "Authorization": f"Bearer {secret}",
+                            "User-Agent": "CampusCareBackend/1.0",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "email_address": [email],
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "password": init_pw,
+                            "skip_password_checks": True,
+                            "skip_legal_checks": True,
+                            "bypass_client_trust": True
+                        },
+                        timeout=6.0
+                    )
+                    if cr.status_code in (200, 201):
+                        clerk_id = cr.json().get("id")
             except Exception:
                 pass
 
@@ -654,24 +679,25 @@ def delete_user_by_admin(user_id: str, admin: dict = Depends(require_supabase_ro
 def reset_user_password_by_admin(user_id: str, admin: dict = Depends(require_supabase_role(Role.administrator))) -> dict:
     target_user = user_repo.get_by_clerk_id(user_id)
     if not target_user:
-        res = get_supabase().table("users").select("*").eq("id", user_id).maybe_single().execute()
-        if res and res.data:
-            target_user = res.data
-        else:
-            res_email = get_supabase().table("users").select("*").eq("email", user_id).maybe_single().execute()
-            if res_email and res_email.data:
-                target_user = res_email.data
+        res_email = get_supabase().table("users").select("*").eq("email", str(user_id).lower().strip()).maybe_single().execute()
+        if res_email and res_email.data:
+            target_user = res_email.data
 
     if not target_user:
         raise HTTPException(404, "User not found")
 
-    email = target_user.get("email")
+    email = str(target_user.get("email") or "").strip().lower()
     clerk_id = target_user.get("clerk_id")
 
     secret = settings.clerk_secret_key or settings.clerk_webhook_secret
     if not secret or not secret.startswith("sk_"):
         raise HTTPException(500, "Clerk secret key is not configured on server")
 
+    rand_digits = "".join(random.choices(string.digits, k=4))
+    temp_password = f"CampusCare@{rand_digits}!"
+    sign_in_url = None
+
+    # 1. Resolve or create user in Clerk
     if not clerk_id or clerk_id.startswith("staff_") or clerk_id.startswith("local_"):
         try:
             r = httpx.get(
@@ -681,18 +707,42 @@ def reset_user_password_by_admin(user_id: str, admin: dict = Depends(require_sup
             )
             if r.status_code == 200 and r.json():
                 clerk_id = r.json()[0]["id"]
-                user_repo.update(target_user["clerk_id"], {"clerk_id": clerk_id})
+            else:
+                # User does not exist in Clerk yet -> create them in Clerk now!
+                parts = str(target_user.get("full_name") or target_user.get("name") or "Staff").split()
+                first_name = parts[0] if parts else "Staff"
+                last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+                cr = httpx.post(
+                    "https://api.clerk.com/v1/users",
+                    headers={
+                        "Authorization": f"Bearer {secret}",
+                        "User-Agent": "CampusCareBackend/1.0",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "email_address": [email],
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "password": temp_password,
+                        "skip_password_checks": True,
+                        "skip_legal_checks": True,
+                        "bypass_client_trust": True
+                    },
+                    timeout=6.0
+                )
+                if cr.status_code in (200, 201):
+                    clerk_id = cr.json().get("id")
+
+            if clerk_id:
+                get_supabase().table("users").update({"clerk_id": clerk_id}).eq("email", email).execute()
                 target_user["clerk_id"] = clerk_id
         except Exception:
             pass
 
-    rand_digits = "".join(random.choices(string.digits, k=4))
-    temp_password = f"CampusCare@{rand_digits}!"
-    sign_in_url = None
-
+    # 2. If user already exists in Clerk, update their password and trust
     if clerk_id and not clerk_id.startswith("staff_"):
         try:
-            patch_res = httpx.patch(
+            httpx.patch(
                 f"https://api.clerk.com/v1/users/{clerk_id}",
                 headers={
                     "Authorization": f"Bearer {secret}",
@@ -710,6 +760,7 @@ def reset_user_password_by_admin(user_id: str, admin: dict = Depends(require_sup
         except Exception:
             pass
 
+        # 3. Generate direct 1-click login URL
         try:
             tok_res = httpx.post(
                 "https://api.clerk.com/v1/sign_in_tokens",
@@ -721,7 +772,7 @@ def reset_user_password_by_admin(user_id: str, admin: dict = Depends(require_sup
                 json={"user_id": clerk_id},
                 timeout=5.0
             )
-            if tok_res.status_code == 200:
+            if tok_res.status_code in (200, 201):
                 sign_in_url = tok_res.json().get("url")
         except Exception:
             pass
