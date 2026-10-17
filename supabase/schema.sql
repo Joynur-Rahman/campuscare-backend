@@ -327,6 +327,10 @@ begin
 
     insert into feedback (ticket_id, user_id, rating, comment)
     values (p_ticket_id, p_user_id, p_rating, p_comment)
+    on conflict (ticket_id) do update
+    set rating = excluded.rating,
+        comment = excluded.comment,
+        created_at = now()
     returning * into created_feedback;
 
     return created_feedback;

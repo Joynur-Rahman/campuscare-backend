@@ -161,6 +161,17 @@ class AppointmentRepository:
 
 class FeedbackRepository:
     def submit(self, ticket_id, user_id, rating, comment):
+        try:
+            res = get_supabase().table("feedback").upsert({
+                "ticket_id": ticket_id,
+                "user_id": user_id,
+                "rating": rating,
+                "comment": comment
+            }, on_conflict="ticket_id").execute()
+            if res.data:
+                return res.data[0] if isinstance(res.data, list) else res.data
+        except Exception:
+            pass
         result = get_supabase().rpc("submit_ticket_feedback", {
             "p_ticket_id": ticket_id, "p_user_id": user_id, "p_rating": rating, "p_comment": comment
         }).execute().data
