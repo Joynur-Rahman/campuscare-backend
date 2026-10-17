@@ -161,9 +161,39 @@ def update_profile(data: dict, user: dict = Depends(current_supabase_user)) -> d
         user_repo.update(user["clerk_id"], updates)
     return {**user, **updates}
 
+def _is_uuid(val: str | None) -> bool:
+    if not val:
+        return False
+    try:
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
 @router.post("/api/tickets", status_code=201)
 def create_ticket(data: TicketCreate, user: dict = Depends(current_supabase_user)) -> dict:
-    result = ticket_repo.create_with_history(data.title, data.description, data.category_id, data.department_id, user["clerk_id"], data.confidential)
+    dept_id = data.department_id
+    cat_id = data.category_id
+
+    if not _is_uuid(dept_id) or not _is_uuid(cat_id):
+        depts = department_repo.get_all()
+        dept = None
+        if dept_id and not _is_uuid(dept_id):
+            dept = next((d for d in depts if d.get("name") == dept_id), None)
+        if not dept:
+            dept = next((d for d in depts if d.get("name") == "Other"), depts[0] if depts else None)
+        if dept:
+            dept_id = dept["id"]
+            cats = category_repo.get_by_department(dept_id)
+            cat = None
+            if cat_id and not _is_uuid(cat_id):
+                cat = next((c for c in cats if c.get("name") == cat_id), None)
+            if not cat:
+                cat = next((c for c in cats if c.get("name") == "Other"), cats[0] if cats else None)
+            if cat:
+                cat_id = cat["id"]
+
+    result = ticket_repo.create_with_history(data.title, data.description, cat_id, dept_id, user["clerk_id"], data.confidential)
     if not result:
         raise HTTPException(502, "Ticket could not be created")
     return result
