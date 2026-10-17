@@ -35,8 +35,8 @@ class LoginRequest(BaseModel):
 class TicketCreate(BaseModel):
     title: str = Field(min_length=3, max_length=200)
     description: str = Field(min_length=1)
-    category_id: str
-    department_id: str
+    category_id: str | None = None
+    department_id: str | None = None
     confidential: bool = False
 
 

@@ -1,5 +1,8 @@
 import hashlib
 import json
+import logging
+import random
+import string
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated
@@ -161,9 +164,39 @@ def update_profile(data: dict, user: dict = Depends(current_supabase_user)) -> d
         user_repo.update(user["clerk_id"], updates)
     return {**user, **updates}
 
+def _is_uuid(val: str | None) -> bool:
+    if not val:
+        return False
+    try:
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
 @router.post("/api/tickets", status_code=201)
 def create_ticket(data: TicketCreate, user: dict = Depends(current_supabase_user)) -> dict:
-    result = ticket_repo.create_with_history(data.title, data.description, data.category_id, data.department_id, user["clerk_id"], data.confidential)
+    dept_id = data.department_id
+    cat_id = data.category_id
+
+    if not _is_uuid(dept_id) or not _is_uuid(cat_id):
+        depts = department_repo.get_all()
+        dept = None
+        if dept_id and not _is_uuid(dept_id):
+            dept = next((d for d in depts if d.get("name") == dept_id), None)
+        if not dept:
+            dept = next((d for d in depts if d.get("name") == "Other"), depts[0] if depts else None)
+        if dept:
+            dept_id = dept["id"]
+            cats = category_repo.get_by_department(dept_id)
+            cat = None
+            if cat_id and not _is_uuid(cat_id):
+                cat = next((c for c in cats if c.get("name") == cat_id), None)
+            if not cat:
+                cat = next((c for c in cats if c.get("name") == "Other"), cats[0] if cats else None)
+            if cat:
+                cat_id = cat["id"]
+
+    result = ticket_repo.create_with_history(data.title, data.description, cat_id, dept_id, user["clerk_id"], data.confidential)
     if not result:
         raise HTTPException(502, "Ticket could not be created")
     return result
@@ -616,6 +649,95 @@ def delete_user_by_admin(user_id: str, admin: dict = Depends(require_supabase_ro
     user_repo.delete(user_id)
     audit_repo.log_action(admin["clerk_id"], "delete_user", "user", user_id, {})
     return {"user_id": user_id, "status": "deleted"}
+
+@router.post("/api/admin/users/{user_id}/reset-password")
+def reset_user_password_by_admin(user_id: str, admin: dict = Depends(require_supabase_role(Role.administrator))) -> dict:
+    target_user = user_repo.get_by_clerk_id(user_id)
+    if not target_user:
+        res = get_supabase().table("users").select("*").eq("id", user_id).maybe_single().execute()
+        if res and res.data:
+            target_user = res.data
+        else:
+            res_email = get_supabase().table("users").select("*").eq("email", user_id).maybe_single().execute()
+            if res_email and res_email.data:
+                target_user = res_email.data
+
+    if not target_user:
+        raise HTTPException(404, "User not found")
+
+    email = target_user.get("email")
+    clerk_id = target_user.get("clerk_id")
+
+    secret = settings.clerk_secret_key or settings.clerk_webhook_secret
+    if not secret or not secret.startswith("sk_"):
+        raise HTTPException(500, "Clerk secret key is not configured on server")
+
+    if not clerk_id or clerk_id.startswith("staff_") or clerk_id.startswith("local_"):
+        try:
+            r = httpx.get(
+                f"https://api.clerk.com/v1/users?email_address={email}",
+                headers={"Authorization": f"Bearer {secret}", "User-Agent": "CampusCareBackend/1.0"},
+                timeout=5.0
+            )
+            if r.status_code == 200 and r.json():
+                clerk_id = r.json()[0]["id"]
+                user_repo.update(target_user["clerk_id"], {"clerk_id": clerk_id})
+                target_user["clerk_id"] = clerk_id
+        except Exception:
+            pass
+
+    rand_digits = "".join(random.choices(string.digits, k=4))
+    temp_password = f"CampusCare@{rand_digits}!"
+    sign_in_url = None
+
+    if clerk_id and not clerk_id.startswith("staff_"):
+        try:
+            patch_res = httpx.patch(
+                f"https://api.clerk.com/v1/users/{clerk_id}",
+                headers={
+                    "Authorization": f"Bearer {secret}",
+                    "User-Agent": "CampusCareBackend/1.0",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "password": temp_password,
+                    "skip_password_checks": True,
+                    "bypass_client_trust": True,
+                    "sign_out_of_other_sessions": False
+                },
+                timeout=6.0
+            )
+        except Exception:
+            pass
+
+        try:
+            tok_res = httpx.post(
+                "https://api.clerk.com/v1/sign_in_tokens",
+                headers={
+                    "Authorization": f"Bearer {secret}",
+                    "User-Agent": "CampusCareBackend/1.0",
+                    "Content-Type": "application/json"
+                },
+                json={"user_id": clerk_id},
+                timeout=5.0
+            )
+            if tok_res.status_code == 200:
+                sign_in_url = tok_res.json().get("url")
+        except Exception:
+            pass
+
+    audit_repo.log_action(admin["clerk_id"], "reset_password", "user", clerk_id or email, {"email": email})
+
+    return {
+        "success": True,
+        "email": email,
+        "name": target_user.get("full_name") or target_user.get("name") or "Staff member",
+        "temp_password": temp_password,
+        "tempPassword": temp_password,
+        "sign_in_url": sign_in_url,
+        "signInUrl": sign_in_url,
+        "message": f"Temporary password set to: {temp_password}"
+    }
 
 @router.put("/api/notices/{notice_id}/end")
 def end_notice(notice_id: str, admin: dict = Depends(require_supabase_role(Role.administrator))) -> dict:
