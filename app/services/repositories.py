@@ -217,9 +217,42 @@ class MessageRepository:
 
     def get_admin_messages(self, offset: int = 0, limit: int = 50):
         try:
-            return get_supabase().table("messages").select("*").order("created_at", desc=True).range(offset, offset + limit - 1).execute().data or []
+            rows = get_supabase().table("messages").select("*").order("created_at", desc=True).range(offset, offset + limit - 1).execute().data or []
         except Exception:
             return []
+        if not rows:
+            return []
+
+        # Populate sender details
+        sender_ids = list({r["sender_id"] for r in rows if r.get("sender_id")})
+        if sender_ids:
+            try:
+                users = get_supabase().table("users").select("clerk_id, full_name, email, role").in_("clerk_id", sender_ids).execute().data or []
+                user_map = {u["clerk_id"]: u for u in users}
+                for r in rows:
+                    u = user_map.get(r.get("sender_id"))
+                    if u:
+                        r["sender_name"] = u.get("full_name") or u.get("email", "").split("@")[0]
+                        r["sender_role"] = u.get("role")
+            except Exception:
+                pass
+
+        # Populate ticket details if thread_id points to a ticket
+        thread_ids = list({r["thread_id"] for r in rows if r.get("thread_id")})
+        if thread_ids:
+            try:
+                tickets = get_supabase().table("tickets").select("id, title, category_id, sub_category, location, status").in_("id", thread_ids).execute().data or []
+                ticket_map = {t["id"]: t for t in tickets}
+                for r in rows:
+                    t = ticket_map.get(r.get("thread_id"))
+                    if t:
+                        r["ticket_title"] = t.get("title") or t.get("sub_category")
+                        r["ticket_location"] = t.get("location")
+                        r["ticket_status"] = t.get("status")
+            except Exception:
+                pass
+
+        return rows
 
     def mark_read(self, message_id: str):
         try:
