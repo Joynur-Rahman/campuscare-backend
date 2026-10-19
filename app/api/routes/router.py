@@ -481,9 +481,15 @@ def get_thread(thread_id: str, user: dict = Depends(current_supabase_user)) -> l
         is_owner = ticket.get("owner_id") == user_id
         is_assigned = ticket.get("assigned_to") == user_id
         is_staff = user.get("role") in (Role.staff.value, Role.administrator.value)
-        if ticket.get("confidential") and not (is_admin or is_owner or is_assigned or is_staff):
+        if not (is_admin or is_owner or is_assigned or is_staff):
             raise HTTPException(403, "Access denied to ticket messages")
-    return message_repo.get_thread(thread_id)
+        return message_repo.get_thread(thread_id)
+    else:
+        thread_messages = message_repo.get_thread(thread_id)
+        if thread_messages:
+            if not is_admin and not any(m["sender_id"] == user_id or m.get("recipient_id") == user_id for m in thread_messages):
+                raise HTTPException(403, "Access denied to this conversation")
+        return thread_messages
 
 @router.get("/api/messages/admin")
 def admin_messages(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), admin: dict = Depends(require_supabase_role(Role.administrator))) -> list[dict]:
@@ -510,8 +516,8 @@ def send_message(data: MessageCreate, user: dict = Depends(current_supabase_user
             is_owner = ticket.get("owner_id") == user_id
             is_assigned = ticket.get("assigned_to") == user_id
             is_staff = user.get("role") in (Role.staff.value, Role.administrator.value)
-            if ticket.get("confidential") and not (is_admin or is_owner or is_assigned or is_staff):
-                raise HTTPException(403, "You cannot reply to this ticket thread")
+            if not (is_admin or is_owner or is_assigned or is_staff):
+                raise HTTPException(403, "You cannot send messages to this ticket thread")
         else:
             thread_messages = message_repo.get_thread(data.thread_id)
             if thread_messages:
