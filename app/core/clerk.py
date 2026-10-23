@@ -17,13 +17,21 @@ def get_current_claims(authorization: str | None = Header(default=None)) -> dict
 
     token = authorization.removeprefix("Bearer ").strip()
     try:
+        decode_options = {"verify_aud": False}
+        decode_kwargs = {
+            "algorithms": ["RS256"],
+            "issuer": settings.clerk_issuer,
+        }
+        if settings.clerk_audience:
+            decode_options["verify_aud"] = True
+            decode_kwargs["audience"] = settings.clerk_audience
+
         signing_key = jwks_client().get_signing_key_from_jwt(token)
         claims = jwt.decode(
             token,
             signing_key.key,
-            algorithms=["RS256"],
-            issuer=settings.clerk_issuer,
-            options={"verify_aud": False},
+            options=decode_options,
+            **decode_kwargs,
         )
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid Clerk token") from exc

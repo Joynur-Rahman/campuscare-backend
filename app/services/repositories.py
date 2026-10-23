@@ -62,10 +62,11 @@ class TicketRepository:
 
     def get_all(self, offset, limit, user_role, user_id):
         query = get_supabase().table("tickets").select("*, ticket_supporters(user_id)")
+        clean_uid = "".join(c for c in str(user_id) if c.isalnum() or c in "_-")
         if user_role in (Role.student.value, Role.faculty.value):
-            query = query.or_(f"confidential.eq.false,owner_id.eq.{user_id}")
+            query = query.or_(f"confidential.eq.false,owner_id.eq.{clean_uid}")
         elif user_role == Role.staff.value:
-            query = query.eq("assigned_to", user_id)
+            query = query.eq("assigned_to", clean_uid)
         data = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute().data or []
         for t in data:
             supporters = [s["user_id"] for s in t.pop("ticket_supporters", []) if isinstance(s, dict) and "user_id" in s]
@@ -79,8 +80,9 @@ class TicketRepository:
 
     def get_similar(self, q, user_role, user_id):
         query = get_supabase().table("tickets").select("*").in_("status", [TicketStatus.submitted.value, TicketStatus.assigned.value, TicketStatus.in_progress.value]).ilike("title", f"%{q}%")
+        clean_uid = "".join(c for c in str(user_id) if c.isalnum() or c in "_-")
         if user_role in (Role.student.value, Role.faculty.value):
-            query = query.or_(f"confidential.eq.false,owner_id.eq.{user_id}")
+            query = query.or_(f"confidential.eq.false,owner_id.eq.{clean_uid}")
         return query.order("created_at", desc=True).limit(20).execute().data or []
 
     def get_confidential(self, user_role, user_id):
@@ -253,6 +255,13 @@ class MessageRepository:
                 pass
 
         return rows
+
+    def get_by_id(self, message_id: str):
+        try:
+            res = get_supabase().table("messages").select("*").eq("id", message_id).maybe_single().execute()
+            return res.data if res else None
+        except Exception:
+            return None
 
     def mark_read(self, message_id: str):
         try:
