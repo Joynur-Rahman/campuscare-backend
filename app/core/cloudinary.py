@@ -44,7 +44,7 @@ def delete_media(public_id: str, resource_type: str | None = None) -> None:
     )
 
 
-def signed_upload_parameters(user_id: str) -> dict[str, str | int]:
+def signed_upload_parameters(user_id: str, filename: str | None = None) -> dict[str, str | int]:
     configure_cloudinary()
     params = {
         "folder": f"{settings.cloudinary_upload_folder}/{user_id}",

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     cloudinary_api_key: str
     cloudinary_api_secret: str
     cloudinary_upload_folder: str = "campuscare"
+    clerk_audience: str | None = None
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

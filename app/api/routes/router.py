@@ -1,7 +1,9 @@
 import hashlib
+import hmac
 import json
 import logging
 import random
+import secrets
 import string
 import uuid
 from datetime import datetime, timezone
@@ -82,8 +84,10 @@ def password_reset(request: Request) -> None:
 @router.get("/api/auth/me")
 def me(email: str | None = None, name: str | None = None, claims: dict = Depends(get_current_claims)) -> dict:
     user_id = claims["sub"]
-    email_hint = email or claims.get("email")
-    return resolve_or_link_user(user_id, email_hint=email_hint, name_hint=name)
+    # SECURITY: Ignore client-supplied query parameters to prevent account takeover.
+    # Email is strictly extracted from verified JWT claims or Clerk API lookup.
+    email_hint = claims.get("email")
+    return resolve_or_link_user(user_id, email_hint=email_hint)
 
 @router.get("/api/auth/session")
 def session_check(claims: dict = Depends(get_current_claims)) -> dict[str, object]:
@@ -174,7 +178,8 @@ def _is_uuid(val: str | None) -> bool:
         return False
 
 @router.post("/api/tickets", status_code=201)
-def create_ticket(data: TicketCreate, user: dict = Depends(current_supabase_user)) -> dict:
+@limiter.limit("15/minute")
+def create_ticket(request: Request, data: TicketCreate, user: dict = Depends(current_supabase_user)) -> dict:
     dept_id = data.department_id
     cat_id = data.category_id
 
@@ -394,6 +399,7 @@ def submit_feedback(ticket_id: str, data: FeedbackCreate, user: dict = Depends(c
     return result
 
 @router.post("/api/files/upload")
+@limiter.limit("10/minute")
 def upload_file(request: Request, file: Annotated[UploadFile, File(...)], ticket_id: Annotated[str | None, Form()] = None, user: dict = Depends(current_supabase_user)) -> dict:
     allowed_types = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
     if file.content_type not in allowed_types:
@@ -401,6 +407,16 @@ def upload_file(request: Request, file: Annotated[UploadFile, File(...)], ticket
     content = file.file.read(10 * 1024 * 1024 + 1)
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(413, "File size must not exceed 10 MB")
+    
+    # Validate magic numbers/signatures to prevent MIME spoofing and malicious files
+    is_valid_magic = (
+        content.startswith(b"\xff\xd8\xff") or  # JPEG
+        content.startswith(b"\x89PNG\r\n\x1a\n") or  # PNG
+        (content.startswith(b"RIFF") and len(content) >= 12 and content[8:12] == b"WEBP") or  # WebP
+        content.startswith(b"%PDF")  # PDF
+    )
+    if not is_valid_magic:
+        raise HTTPException(400, "File content signature does not match allowed file types (JPEG, PNG, WebP, PDF)")
     
     if ticket_id:
         ticket = ticket_repo.get_by_id(ticket_id)
@@ -480,8 +496,8 @@ def get_thread(thread_id: str, user: dict = Depends(current_supabase_user)) -> l
     if ticket:
         is_owner = ticket.get("owner_id") == user_id
         is_assigned = ticket.get("assigned_to") == user_id
-        is_staff = user.get("role") in (Role.staff.value, Role.administrator.value)
-        if not (is_admin or is_owner or is_assigned or is_staff):
+        # SECURITY FIX: Only the complaint owner, assigned technician/staff, or administrator can view messages
+        if not (is_admin or is_owner or is_assigned):
             raise HTTPException(403, "Access denied to ticket messages")
         return message_repo.get_thread(thread_id)
     else:
@@ -496,12 +512,19 @@ def admin_messages(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le
     return message_repo.get_admin_messages(offset, limit)
 
 @router.put("/api/messages/{message_id}/read")
-def mark_message_read(message_id: str, _: dict = Depends(current_supabase_user)) -> dict:
+def mark_message_read(message_id: str, user: dict = Depends(current_supabase_user)) -> dict:
+    msg = message_repo.get_by_id(message_id)
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    # SECURITY FIX: Only the intended recipient or an administrator can mark the message as read
+    if msg.get("recipient_id") and msg.get("recipient_id") != user["clerk_id"] and user.get("role") != Role.administrator.value:
+        raise HTTPException(403, "Cannot mark another user's message as read")
     message_repo.mark_read(message_id)
     return {"id": message_id, "status": "read"}
 
 @router.post("/api/messages", status_code=201)
-def send_message(data: MessageCreate, user: dict = Depends(current_supabase_user)) -> dict:
+@limiter.limit("30/minute")
+def send_message(request: Request, data: MessageCreate, user: dict = Depends(current_supabase_user)) -> dict:
     user_id = user["clerk_id"]
     is_admin = user.get("role") == Role.administrator.value
 
@@ -515,8 +538,8 @@ def send_message(data: MessageCreate, user: dict = Depends(current_supabase_user
         if ticket:
             is_owner = ticket.get("owner_id") == user_id
             is_assigned = ticket.get("assigned_to") == user_id
-            is_staff = user.get("role") in (Role.staff.value, Role.administrator.value)
-            if not (is_admin or is_owner or is_assigned or is_staff):
+            # SECURITY FIX: Only the complaint owner, assigned technician/staff, or administrator can send messages
+            if not (is_admin or is_owner or is_assigned):
                 raise HTTPException(403, "You cannot send messages to this ticket thread")
         else:
             thread_messages = message_repo.get_thread(data.thread_id)
@@ -635,7 +658,8 @@ def create_user_by_admin(data: AdminUserCreate, admin: dict = Depends(require_su
                     parts = str(data.name).split()
                     first_name = parts[0] if parts else "Staff"
                     last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
-                    init_pw = f"CampusCare@{random.randint(1000, 9999)}!"
+                    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+                    init_pw = "CC@" + "".join(secrets.choice(alphabet) for _ in range(12)) + "!"
                     cr = httpx.post(
                         "https://api.clerk.com/v1/users",
                         headers={
@@ -682,7 +706,8 @@ def delete_user_by_admin(user_id: str, admin: dict = Depends(require_supabase_ro
     return {"user_id": user_id, "status": "deleted"}
 
 @router.post("/api/admin/users/{user_id}/reset-password")
-def reset_user_password_by_admin(user_id: str, admin: dict = Depends(require_supabase_role(Role.administrator))) -> dict:
+@limiter.limit("10/minute")
+def reset_user_password_by_admin(request: Request, user_id: str, admin: dict = Depends(require_supabase_role(Role.administrator))) -> dict:
     target_user = user_repo.get_by_clerk_id(user_id)
     if not target_user:
         res_email = get_supabase().table("users").select("*").eq("email", str(user_id).lower().strip()).maybe_single().execute()
@@ -699,8 +724,8 @@ def reset_user_password_by_admin(user_id: str, admin: dict = Depends(require_sup
     if not secret or not secret.startswith("sk_"):
         raise HTTPException(500, "Clerk secret key is not configured on server")
 
-    rand_digits = "".join(random.choices(string.digits, k=4))
-    temp_password = f"CampusCare@{rand_digits}!"
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    temp_password = "CC@" + "".join(secrets.choice(alphabet) for _ in range(12)) + "!"
     sign_in_url = None
 
     # 1. Resolve or create user in Clerk
@@ -836,7 +861,7 @@ async def cloudinary_webhook(request: Request) -> dict[str, str]:
     payload = body.decode('utf-8') + timestamp + settings.cloudinary_api_secret
     expected_sig = hashlib.sha1(payload.encode('utf-8')).hexdigest()
     
-    if expected_sig != signature:
+    if not hmac.compare_digest(expected_sig, signature):
         raise HTTPException(status_code=400, detail="Invalid Cloudinary webhook signature")
         
     data = await request.json()

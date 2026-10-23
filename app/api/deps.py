@@ -30,9 +30,14 @@ def fetch_clerk_user(user_id: str) -> dict:
             data = res.json()
             emails = data.get("email_addresses", [])
             primary_id = data.get("primary_email_address_id")
-            email = next((e.get("email_address") for e in emails if e.get("id") == primary_id), None)
-            if not email and emails:
-                email = emails[0].get("email_address")
+            primary_obj = next((e for e in emails if e.get("id") == primary_id), None)
+            if not primary_obj and emails:
+                primary_obj = emails[0]
+            email = None
+            if primary_obj:
+                verification = primary_obj.get("verification") or {}
+                if verification.get("status") in ("verified", None):
+                    email = primary_obj.get("email_address")
             name = " ".join(part for part in (data.get("first_name"), data.get("last_name")) if part)
             return {"email": (email or "").lower().strip(), "name": name or ""}
     except Exception:
@@ -53,7 +58,7 @@ def resolve_or_link_user(user_id: str, email_hint: str | None = None, name_hint:
             )
         return _attach_duty(profile)
 
-    # 2. Extract email from hints or Clerk API
+    # 2. Extract email from verified token claims or Clerk Backend API
     email = (email_hint or "").lower().strip()
     name = (name_hint or "").strip()
     if not email:
@@ -69,28 +74,30 @@ def resolve_or_link_user(user_id: str, email_hint: str | None = None, name_hint:
             pre_created = existing.data
             old_clerk_id = pre_created["clerk_id"]
             if old_clerk_id != user_id:
-                # Link old pre-provisioned ID to the real Clerk ID
-                if profile:
+                # SECURITY CHECK: Only allow linking if the pre-created account is a placeholder (starts with staff_ or local_)
+                # NEVER overwrite an existing account that is already linked to another authentic Clerk user!
+                if str(old_clerk_id).startswith("staff_") or str(old_clerk_id).startswith("local_"):
+                    if profile:
+                        try:
+                            sb.table("users").delete().eq("clerk_id", user_id).execute()
+                        except Exception:
+                            pass
+
                     try:
-                        sb.table("users").delete().eq("clerk_id", user_id).execute()
+                        sb.table("tickets").update({"assigned_to": user_id}).eq("assigned_to", old_clerk_id).execute()
                     except Exception:
                         pass
 
-                try:
-                    sb.table("tickets").update({"assigned_to": user_id}).eq("assigned_to", old_clerk_id).execute()
-                except Exception:
-                    pass
+                    try:
+                        sb.table("users").update({
+                            "clerk_id": user_id,
+                            "full_name": pre_created.get("full_name") or name,
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }).eq("email", email).execute()
+                    except Exception:
+                        pass
 
-                try:
-                    sb.table("users").update({
-                        "clerk_id": user_id,
-                        "full_name": pre_created.get("full_name") or name,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }).eq("email", email).execute()
-                except Exception:
-                    pass
-
-                return _attach_duty(user_repo.get_by_clerk_id(user_id) or pre_created)
+                    return _attach_duty(user_repo.get_by_clerk_id(user_id) or pre_created)
 
     # 4. If user already had a profile with clerk_id, update email/name if missing
     if profile:
