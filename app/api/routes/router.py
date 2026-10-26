@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import secrets
+import re
 import string
 import uuid
 from datetime import datetime, timezone
@@ -201,6 +202,39 @@ def create_ticket(request: Request, data: TicketCreate, user: dict = Depends(cur
                 cat = next((c for c in cats if c.get("name") == "Other"), cats[0] if cats else None)
             if cat:
                 cat_id = cat["id"]
+
+    # Prevent student from creating duplicate tickets for an active issue
+    owner_id = user["clerk_id"]
+    active_statuses = [
+        TicketStatus.submitted.value,
+        TicketStatus.open.value,
+        TicketStatus.assigned.value,
+        TicketStatus.in_progress.value,
+        TicketStatus.escalated.value,
+        TicketStatus.reopened.value,
+    ]
+    try:
+        existing = get_supabase().table("tickets").select("id, title, status").eq("owner_id", owner_id).in_("status", active_statuses).execute().data or []
+        clean_new = re.sub(r"[^\w\s]", " ", (data.title or "").lower()).strip()
+        clean_new = re.sub(r"\s+", " ", clean_new)
+        new_sub = re.split(r"[—–\-\ufffd|:]", data.title or "")[-1].strip().lower()
+        new_sub = re.sub(r"[^\w\s]", " ", new_sub).strip()
+
+        for t in existing:
+            clean_old = re.sub(r"[^\w\s]", " ", (t.get("title") or "").lower()).strip()
+            clean_old = re.sub(r"\s+", " ", clean_old)
+            old_sub = re.split(r"[—–\-\ufffd|:]", t.get("title") or "")[-1].strip().lower()
+            old_sub = re.sub(r"[^\w\s]", " ", old_sub).strip()
+
+            if clean_new and clean_old:
+                if clean_new == clean_old or (len(clean_new) >= 6 and clean_new in clean_old) or (len(clean_old) >= 6 and clean_old in clean_new):
+                    raise HTTPException(400, "You already have an active ticket for this issue. Duplicate submissions are not allowed.")
+            if new_sub and old_sub and len(new_sub) >= 4 and new_sub == old_sub:
+                raise HTTPException(400, "You already have an active ticket for this issue. Duplicate submissions are not allowed.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     result = ticket_repo.create_with_history(data.title, data.description, cat_id, dept_id, user["clerk_id"], data.confidential)
     if not result:
