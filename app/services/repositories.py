@@ -592,13 +592,13 @@ class MessageRepository:
         thread_ids = list({r["thread_id"] for r in rows if r.get("thread_id")})
         if thread_ids:
             try:
-                tickets = get_supabase().table("tickets").select("id, title, category_id, sub_category, location, status").in_("id", thread_ids).execute().data or []
+                tickets = get_supabase().table("tickets").select("id, title, category_id, description, status").in_("id", thread_ids).execute().data or []
                 ticket_map = {t["id"]: t for t in tickets}
                 for r in rows:
                     t = ticket_map.get(r.get("thread_id"))
                     if t:
-                        r["ticket_title"] = t.get("title") or t.get("sub_category")
-                        r["ticket_location"] = t.get("location")
+                        r["ticket_title"] = t.get("title") or t.get("description", "")[:40]
+                        r["ticket_location"] = ""
                         r["ticket_status"] = t.get("status")
             except Exception:
                 pass
@@ -616,6 +616,24 @@ class MessageRepository:
         try:
             return get_supabase().table("messages").update({"read_at": datetime.now(timezone.utc).isoformat()}).eq("id", message_id).execute().data
         except Exception:
+            return []
+
+    def mark_thread_read(self, thread_id: str, reader_id: str | None = None, is_admin: bool = False):
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            rows = get_supabase().table("messages").select("id, sender_id, recipient_id, read_at").eq("thread_id", thread_id).execute().data or []
+            ids_to_update = []
+            for r in rows:
+                if reader_id and r.get("sender_id") == reader_id:
+                    continue
+                if not r.get("read_at"):
+                    if is_admin or not r.get("recipient_id") or r.get("recipient_id") == reader_id:
+                        ids_to_update.append(r["id"])
+            if ids_to_update:
+                return get_supabase().table("messages").update({"read_at": now_iso}).in_("id", ids_to_update).execute().data or []
+            return []
+        except Exception as e:
+            logger.error(f"Error marking thread {thread_id} read: {e}")
             return []
 
     def create(self, message_data):

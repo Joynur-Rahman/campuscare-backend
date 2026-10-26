@@ -610,6 +610,13 @@ def mark_message_read(message_id: str, user: dict = Depends(current_supabase_use
     message_repo.mark_read(message_id)
     return {"id": message_id, "status": "read"}
 
+@router.put("/api/messages/thread/{thread_id}/read")
+def mark_thread_messages_read(thread_id: str, user: dict = Depends(current_supabase_user)) -> dict:
+    user_id = user["clerk_id"]
+    is_admin = user.get("role") == Role.administrator.value
+    res = message_repo.mark_thread_read(thread_id, reader_id=user_id, is_admin=is_admin)
+    return {"thread_id": thread_id, "status": "read", "updated": len(res or [])}
+
 @router.post("/api/messages", status_code=201)
 @limiter.limit("30/minute")
 def send_message(request: Request, data: MessageCreate, user: dict = Depends(current_supabase_user)) -> dict:
