@@ -33,6 +33,7 @@ from app.schemas import (
     SettingsUpdate,
     TicketAction,
     TicketCreate,
+    TicketMergeRequest,
     TicketStatus,
     TicketUpdate,
     UserCreate,
@@ -211,8 +212,41 @@ def list_tickets(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=1
     return ticket_repo.get_all(offset, limit, user.get("role"), user["clerk_id"])
 
 @router.get("/api/tickets/similar")
-def similar_tickets(q: str = Query(min_length=2, max_length=100), user: dict = Depends(current_supabase_user)) -> list[dict]:
-    return ticket_repo.get_similar(q, user.get("role"), user["clerk_id"])
+def similar_tickets(
+    q: str = Query("", max_length=150),
+    category_id: str | None = Query(None),
+    location: str | None = Query(None),
+    limit: int = Query(10, ge=1, le=20),
+    user: dict = Depends(current_supabase_user)
+) -> list[dict]:
+    return ticket_repo.get_similar(q, user.get("role"), user["clerk_id"], category_id, location, limit)
+
+@router.post("/api/tickets/{target_id}/merge")
+def merge_tickets_endpoint(
+    target_id: str,
+    data: TicketMergeRequest,
+    admin: dict = Depends(require_supabase_role(Role.administrator))
+) -> dict:
+    if target_id in data.duplicate_ticket_ids:
+        raise HTTPException(400, "Cannot merge a ticket into itself")
+    
+    result = ticket_repo.merge_tickets(
+        target_id, 
+        data.duplicate_ticket_ids, 
+        admin["clerk_id"], 
+        data.resolution_note or ""
+    )
+    if not result:
+        raise HTTPException(404, "Target ticket not found or merge failed")
+    
+    audit_repo.log_action(
+        admin["clerk_id"], 
+        "merge_tickets", 
+        "ticket", 
+        target_id, 
+        {"duplicates": data.duplicate_ticket_ids, "note": data.resolution_note}
+    )
+    return result
 
 @router.get("/api/tickets/confidential")
 def confidential_tickets(user: dict = Depends(current_supabase_user)) -> list[dict]:
