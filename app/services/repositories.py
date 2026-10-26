@@ -71,6 +71,7 @@ class TicketRepository:
         if data:
             ticket_ids = [t["id"] for t in data if t.get("id")]
             media_map = {}
+            feedback_map = {}
             if ticket_ids:
                 try:
                     all_media = get_supabase().table("ticket_media").select("*").in_("ticket_id", ticket_ids).execute().data or []
@@ -81,6 +82,25 @@ class TicketRepository:
                         media_map[tid].append(m)
                 except Exception:
                     pass
+                try:
+                    all_fb = get_supabase().table("feedback").select("*").in_("ticket_id", ticket_ids).execute().data or []
+                    for fb in all_fb:
+                        feedback_map[fb.get("ticket_id")] = fb
+                except Exception:
+                    pass
+            cat_map = {}
+            dept_map = {}
+            try:
+                cats = get_supabase().table("categories").select("id, name").execute().data or []
+                cat_map = {c["id"]: c["name"] for c in cats if "id" in c and "name" in c}
+            except Exception:
+                pass
+            try:
+                depts = get_supabase().table("departments").select("id, name").execute().data or []
+                dept_map = {d["id"]: d["name"] for d in depts if "id" in d and "name" in d}
+            except Exception:
+                pass
+
             for t in data:
                 supporters = [s["user_id"] for s in t.pop("ticket_supporters", []) if isinstance(s, dict) and "user_id" in s]
                 t["upvoted_by"] = supporters
@@ -88,6 +108,31 @@ class TicketRepository:
                 t_media = media_map.get(t.get("id"), [])
                 t["media"] = t_media
                 t["attachments"] = [m["secure_url"] for m in t_media if m.get("secure_url")]
+                fb = feedback_map.get(t.get("id"))
+                if fb:
+                    t["rating"] = fb.get("rating")
+                    t["feedback_comment"] = fb.get("comment")
+                    t["feedbackComment"] = fb.get("comment")
+                else:
+                    t["rating"] = None
+                    t["feedback_comment"] = None
+                    t["feedbackComment"] = None
+                
+                cid = t.get("category_id")
+                cname = cat_map.get(cid)
+                if not cname:
+                    title = t.get("title") or ""
+                    if "—" in title:
+                        cname = title.split("—")[0].strip()
+                    elif " - " in title:
+                        cname = title.split(" - ")[0].strip()
+                    else:
+                        cname = "Other"
+                t["category"] = cname
+                t["category_name"] = cname
+                did = t.get("department_id")
+                t["department"] = dept_map.get(did, "Other")
+                t["department_name"] = t["department"]
         return data
 
     def get_supporter_count(self, ticket_id):
@@ -113,20 +158,63 @@ class TicketRepository:
         if data:
             ticket_ids = [t["id"] for t in data if t.get("id")]
             if ticket_ids:
+                media_map = {}
+                feedback_map = {}
                 try:
                     all_media = get_supabase().table("ticket_media").select("*").in_("ticket_id", ticket_ids).execute().data or []
-                    media_map = {}
                     for m in all_media:
                         tid = m.get("ticket_id")
                         if tid not in media_map:
                             media_map[tid] = []
                         media_map[tid].append(m)
-                    for t in data:
-                        t_media = media_map.get(t.get("id"), [])
-                        t["media"] = t_media
-                        t["attachments"] = [m["secure_url"] for m in t_media if m.get("secure_url")]
                 except Exception:
                     pass
+                try:
+                    all_fb = get_supabase().table("feedback").select("*").in_("ticket_id", ticket_ids).execute().data or []
+                    for fb in all_fb:
+                        feedback_map[fb.get("ticket_id")] = fb
+                except Exception:
+                    pass
+                cat_map = {}
+                dept_map = {}
+                try:
+                    cats = get_supabase().table("categories").select("id, name").execute().data or []
+                    cat_map = {c["id"]: c["name"] for c in cats if "id" in c and "name" in c}
+                except Exception:
+                    pass
+                try:
+                    depts = get_supabase().table("departments").select("id, name").execute().data or []
+                    dept_map = {d["id"]: d["name"] for d in depts if "id" in d and "name" in d}
+                except Exception:
+                    pass
+                for t in data:
+                    t_media = media_map.get(t.get("id"), [])
+                    t["media"] = t_media
+                    t["attachments"] = [m["secure_url"] for m in t_media if m.get("secure_url")]
+                    fb = feedback_map.get(t.get("id"))
+                    if fb:
+                        t["rating"] = fb.get("rating")
+                        t["feedback_comment"] = fb.get("comment")
+                        t["feedbackComment"] = fb.get("comment")
+                    else:
+                        t["rating"] = None
+                        t["feedback_comment"] = None
+                        t["feedbackComment"] = None
+                    cid = t.get("category_id")
+                    cname = cat_map.get(cid)
+                    if not cname:
+                        title = t.get("title") or ""
+                        if "—" in title:
+                            cname = title.split("—")[0].strip()
+                        elif " - " in title:
+                            cname = title.split(" - ")[0].strip()
+                        else:
+                            cname = "Other"
+                    t["category"] = cname
+                    t["category_name"] = cname
+                    did = t.get("department_id")
+                    t["department"] = dept_map.get(did, "Other")
+                    t["department_name"] = t["department"]
         return data
 
     def get_by_id(self, ticket_id):
@@ -140,6 +228,48 @@ class TicketRepository:
             except Exception:
                 data["media"] = []
                 data["attachments"] = []
+            try:
+                fb = get_supabase().table("feedback").select("*").eq("ticket_id", ticket_id).maybe_single().execute()
+                fb_data = fb.data if fb else None
+                if fb_data:
+                    data["rating"] = fb_data.get("rating")
+                    data["feedback_comment"] = fb_data.get("comment")
+                    data["feedbackComment"] = fb_data.get("comment")
+                else:
+                    data["rating"] = None
+                    data["feedback_comment"] = None
+                    data["feedbackComment"] = None
+            except Exception:
+                data["rating"] = None
+                data["feedback_comment"] = None
+                data["feedbackComment"] = None
+            try:
+                cid = data.get("category_id")
+                cname = None
+                if cid:
+                    crow = get_supabase().table("categories").select("name").eq("id", cid).maybe_single().execute()
+                    if crow and crow.data:
+                        cname = crow.data.get("name")
+                if not cname:
+                    title = data.get("title") or ""
+                    if "—" in title:
+                        cname = title.split("—")[0].strip()
+                    elif " - " in title:
+                        cname = title.split(" - ")[0].strip()
+                    else:
+                        cname = "Other"
+                data["category"] = cname
+                data["category_name"] = cname
+                did = data.get("department_id")
+                dname = "Other"
+                if did:
+                    drow = get_supabase().table("departments").select("name").eq("id", did).maybe_single().execute()
+                    if drow and drow.data:
+                        dname = drow.data.get("name") or "Other"
+                data["department"] = dname
+                data["department_name"] = dname
+            except Exception:
+                pass
         return data
 
     def get_history(self, ticket_id):
