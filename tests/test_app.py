@@ -53,6 +53,7 @@ def test_documented_core_routes_are_registered() -> None:
     assert "/api/files/upload" in routes
     assert "/api/files/{media_id}" in routes
     assert "/api/files/upload/signature" in routes
+    assert "/api/tickets/{ticket_id}/media" in routes
 
 
 def test_domain_restriction_rejects_non_iiitg_self_registration(monkeypatch) -> None:

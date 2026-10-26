@@ -243,7 +243,26 @@ def get_ticket(ticket_id: str, user: dict = Depends(current_supabase_user)) -> d
         audit_repo.log_action(user["clerk_id"], "read_ticket", "ticket", ticket_id, {"title": ticket["title"]})
         
     history = ticket_repo.get_history(ticket_id)
-    return {**ticket, "history": history}
+    media = media_repo.get_by_ticket_id(ticket_id)
+    attachments = [m["secure_url"] for m in media if m.get("secure_url")]
+    return {**ticket, "history": history, "media": media, "attachments": attachments}
+
+@router.get("/api/tickets/{ticket_id}/media")
+def get_ticket_media(ticket_id: str, user: dict = Depends(current_supabase_user)) -> list[dict]:
+    ticket = ticket_repo.get_by_id(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+        
+    user_role = user.get("role")
+    is_owner = ticket["owner_id"] == user["clerk_id"]
+    
+    if user_role in (Role.student.value, Role.faculty.value) and not is_owner:
+        if ticket.get("confidential"):
+            raise HTTPException(403, "You cannot access another user's confidential complaint media")
+    if user_role == Role.staff.value and ticket.get("assigned_to") != user["clerk_id"]:
+        raise HTTPException(403, "You can only access assigned complaints media")
+        
+    return media_repo.get_by_ticket_id(ticket_id)
 
 @router.post("/api/tickets/{ticket_id}/follow")
 def follow_ticket(ticket_id: str, user: dict = Depends(current_supabase_user)) -> dict[str, str]:

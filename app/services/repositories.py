@@ -68,10 +68,26 @@ class TicketRepository:
         elif user_role == Role.staff.value:
             query = query.eq("assigned_to", clean_uid)
         data = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute().data or []
-        for t in data:
-            supporters = [s["user_id"] for s in t.pop("ticket_supporters", []) if isinstance(s, dict) and "user_id" in s]
-            t["upvoted_by"] = supporters
-            t["upvotes"] = len(supporters) + 1
+        if data:
+            ticket_ids = [t["id"] for t in data if t.get("id")]
+            media_map = {}
+            if ticket_ids:
+                try:
+                    all_media = get_supabase().table("ticket_media").select("*").in_("ticket_id", ticket_ids).execute().data or []
+                    for m in all_media:
+                        tid = m.get("ticket_id")
+                        if tid not in media_map:
+                            media_map[tid] = []
+                        media_map[tid].append(m)
+                except Exception:
+                    pass
+            for t in data:
+                supporters = [s["user_id"] for s in t.pop("ticket_supporters", []) if isinstance(s, dict) and "user_id" in s]
+                t["upvoted_by"] = supporters
+                t["upvotes"] = len(supporters) + 1
+                t_media = media_map.get(t.get("id"), [])
+                t["media"] = t_media
+                t["attachments"] = [m["secure_url"] for m in t_media if m.get("secure_url")]
         return data
 
     def get_supporter_count(self, ticket_id):
@@ -93,11 +109,38 @@ class TicketRepository:
             query = query.eq("assigned_to", user_id)
         elif user_role != Role.administrator.value:
             return []
-        return query.order("created_at", desc=True).execute().data or []
+        data = query.order("created_at", desc=True).execute().data or []
+        if data:
+            ticket_ids = [t["id"] for t in data if t.get("id")]
+            if ticket_ids:
+                try:
+                    all_media = get_supabase().table("ticket_media").select("*").in_("ticket_id", ticket_ids).execute().data or []
+                    media_map = {}
+                    for m in all_media:
+                        tid = m.get("ticket_id")
+                        if tid not in media_map:
+                            media_map[tid] = []
+                        media_map[tid].append(m)
+                    for t in data:
+                        t_media = media_map.get(t.get("id"), [])
+                        t["media"] = t_media
+                        t["attachments"] = [m["secure_url"] for m in t_media if m.get("secure_url")]
+                except Exception:
+                    pass
+        return data
 
     def get_by_id(self, ticket_id):
         res = get_supabase().table("tickets").select("*").eq("id", ticket_id).maybe_single().execute()
-        return res.data if res else None
+        data = res.data if res else None
+        if data:
+            try:
+                media = get_supabase().table("ticket_media").select("*").eq("ticket_id", ticket_id).order("created_at").execute().data or []
+                data["media"] = media
+                data["attachments"] = [m["secure_url"] for m in media if m.get("secure_url")]
+            except Exception:
+                data["media"] = []
+                data["attachments"] = []
+        return data
 
     def get_history(self, ticket_id):
         return get_supabase().table("ticket_history").select("*").eq("ticket_id", ticket_id).order("created_at").execute().data or []
@@ -186,6 +229,12 @@ class MediaRepository:
     def get_by_id(self, media_id):
         res = get_supabase().table("ticket_media").select("*").eq("id", media_id).maybe_single().execute()
         return res.data if res else None
+
+    def get_by_ticket_id(self, ticket_id):
+        try:
+            return get_supabase().table("ticket_media").select("*").eq("ticket_id", ticket_id).order("created_at").execute().data or []
+        except Exception:
+            return []
 
     def delete(self, media_id):
         return get_supabase().table("ticket_media").delete().eq("id", media_id).execute().data
