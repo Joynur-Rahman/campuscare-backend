@@ -518,6 +518,24 @@ def my_messages(user_id: str, offset: int = Query(0, ge=0), limit: int = Query(5
         raise HTTPException(403, "Cannot access another user's messages")
     return message_repo.get_user_messages(user_id, offset, limit)
 
+def is_lost_and_found_ticket(ticket: dict | None) -> bool:
+    if not ticket:
+        return False
+    title = str(ticket.get("title") or "").lower()
+    desc = str(ticket.get("description") or "").lower()
+    cat = str(ticket.get("category") or ticket.get("category_name") or "").lower()
+    sub = str(ticket.get("sub_category") or ticket.get("subCategory") or "").lower()
+    haystack = f"{title} {cat} {sub} {desc[:150]}"
+    return (
+        "lost & found" in haystack
+        or "lost and found" in haystack
+        or "[lost]" in haystack
+        or "[found]" in haystack
+        or "lost/found" in haystack
+        or "lost item" in haystack
+        or "found item" in haystack
+    )
+
 @router.get("/api/messages/thread/{thread_id}")
 def get_thread(thread_id: str, user: dict = Depends(current_supabase_user)) -> list[dict]:
     user_id = user["clerk_id"]
@@ -531,8 +549,9 @@ def get_thread(thread_id: str, user: dict = Depends(current_supabase_user)) -> l
     if ticket:
         is_owner = ticket.get("owner_id") == user_id
         is_assigned = ticket.get("assigned_to") == user_id
-        # SECURITY FIX: Only the complaint owner, assigned technician/staff, or administrator can view messages
-        if not (is_admin or is_owner or is_assigned):
+        is_lf = is_lost_and_found_ticket(ticket)
+        # Lost & Found chats are open for all campus members to view and claim
+        if not (is_admin or is_owner or is_assigned or is_lf):
             raise HTTPException(403, "Access denied to ticket messages")
         return message_repo.get_thread(thread_id)
     else:
@@ -563,8 +582,8 @@ def send_message(request: Request, data: MessageCreate, user: dict = Depends(cur
     user_id = user["clerk_id"]
     is_admin = user.get("role") == Role.administrator.value
 
+    ticket = None
     if data.thread_id:
-        ticket = None
         try:
             ticket = ticket_repo.get_by_id(data.thread_id)
         except Exception:
@@ -573,8 +592,9 @@ def send_message(request: Request, data: MessageCreate, user: dict = Depends(cur
         if ticket:
             is_owner = ticket.get("owner_id") == user_id
             is_assigned = ticket.get("assigned_to") == user_id
-            # SECURITY FIX: Only the complaint owner, assigned technician/staff, or administrator can send messages
-            if not (is_admin or is_owner or is_assigned):
+            is_lf = is_lost_and_found_ticket(ticket)
+            # Lost & Found chats are open for all campus members to message and claim
+            if not (is_admin or is_owner or is_assigned or is_lf):
                 raise HTTPException(403, "You cannot send messages to this ticket thread")
         else:
             thread_messages = message_repo.get_thread(data.thread_id)
@@ -585,6 +605,10 @@ def send_message(request: Request, data: MessageCreate, user: dict = Depends(cur
                 raise HTTPException(404, "Thread not found")
 
     payload = {"sender_id": user_id, **data.model_dump(exclude_none=True)}
+    if ticket and not payload.get("recipient_id"):
+        owner_id = ticket.get("owner_id")
+        if owner_id and owner_id != user_id:
+            payload["recipient_id"] = owner_id
     try:
         result = message_repo.create(payload)
     except Exception as exc:
