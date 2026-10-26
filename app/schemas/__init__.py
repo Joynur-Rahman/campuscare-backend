@@ -101,3 +101,7 @@ class AdminUserCreate(BaseModel):
     role: Role = Role.staff
     department: str | None = None
 
+class TicketMergeRequest(BaseModel):
+    duplicate_ticket_ids: list[str] = Field(min_length=1)
+    resolution_note: str | None = None
+

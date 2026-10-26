@@ -1,4 +1,4 @@
-
+import re
 from datetime import datetime, timezone
 from app.core.supabase import get_supabase
 from app.schemas import Role, TicketStatus
@@ -139,12 +139,95 @@ class TicketRepository:
         res = get_supabase().table("ticket_supporters").select("user_id", count="exact").eq("ticket_id", ticket_id).execute()
         return (res.count or 0) + 1
 
-    def get_similar(self, q, user_role, user_id):
-        query = get_supabase().table("tickets").select("*").in_("status", [TicketStatus.submitted.value, TicketStatus.assigned.value, TicketStatus.in_progress.value]).ilike("title", f"%{q}%")
+    def get_similar(self, q: str = "", user_role: str = "student", user_id: str = "", category_id: str | None = None, location: str | None = None, limit: int = 10):
+        query = get_supabase().table("tickets").select("*, ticket_supporters(user_id)").in_("status", [TicketStatus.submitted.value, TicketStatus.assigned.value, TicketStatus.in_progress.value])
         clean_uid = "".join(c for c in str(user_id) if c.isalnum() or c in "_-")
         if user_role in (Role.student.value, Role.faculty.value):
             query = query.or_(f"confidential.eq.false,owner_id.eq.{clean_uid}")
-        return query.order("created_at", desc=True).limit(20).execute().data or []
+        
+        candidates = query.order("created_at", desc=True).limit(60).execute().data or []
+        if not candidates:
+            return []
+        
+        ticket_ids = [t["id"] for t in candidates if t.get("id")]
+        media_map = {}
+        try:
+            all_media = get_supabase().table("ticket_media").select("*").in_("ticket_id", ticket_ids).execute().data or []
+            for m in all_media:
+                tid = m.get("ticket_id")
+                if tid not in media_map:
+                    media_map[tid] = []
+                media_map[tid].append(m)
+        except Exception:
+            pass
+        
+        cat_map = {}
+        try:
+            cats = get_supabase().table("categories").select("id, name").execute().data or []
+            cat_map = {c["id"]: c["name"] for c in cats if "id" in c and "name" in c}
+        except Exception:
+            pass
+
+        q_lower = (q or "").lower().strip()
+        q_tokens = [tok for tok in re.findall(r"\w+", q_lower) if len(tok) >= 3 and tok not in {"the", "and", "for", "with", "this", "that", "issue", "problem"}]
+        loc_lower = (location or "").lower().strip()
+        loc_tokens = [tok for tok in re.findall(r"\w+", loc_lower) if len(tok) >= 3 and tok not in {"the", "and", "campus", "guwahati", "iiit"}]
+
+        scored = []
+        for t in candidates:
+            supporters = [s["user_id"] for s in t.pop("ticket_supporters", []) if isinstance(s, dict) and "user_id" in s]
+            t["upvoted_by"] = supporters
+            t["upvotes"] = len(supporters) + 1
+            t_media = media_map.get(t.get("id"), [])
+            t["media"] = t_media
+            t["attachments"] = [m["secure_url"] for m in t_media if m.get("secure_url")]
+            cid = t.get("category_id")
+            cname = cat_map.get(cid)
+            if not cname:
+                title = t.get("title") or ""
+                cname = title.split("—")[0].strip() if "—" in title else "Other"
+            t["category"] = cname
+            t["category_name"] = cname
+
+            score = 0
+            t_title = (t.get("title") or "").lower()
+            t_desc = (t.get("description") or "").lower()
+            t_loc = (t.get("location") or "").lower()
+
+            # Category match
+            if category_id:
+                if t.get("category_id") == category_id or cname.lower() == category_id.lower():
+                    score += 30
+            
+            # Location overlap
+            if loc_tokens:
+                loc_matches = sum(1 for tok in loc_tokens if tok in t_loc or tok in t_desc)
+                if loc_matches > 0:
+                    score += min(45, loc_matches * 20)
+
+            # Title & query keyword overlap
+            if q_tokens:
+                q_matches = sum(1 for tok in q_tokens if tok in t_title or tok in t_desc)
+                if q_matches > 0:
+                    score += min(45, q_matches * 15)
+
+            # Direct string containment bonus
+            if q_lower and len(q_lower) >= 4 and (q_lower in t_title or q_lower in t_desc):
+                score += 35
+
+            if score >= 25:
+                t["similarity_score"] = score
+                scored.append(t)
+
+        # Fallback: if query string exists but scored is empty, do a direct substring search
+        if not scored and q_lower and len(q_lower) >= 2:
+            for t in candidates:
+                if q_lower in (t.get("title") or "").lower() or q_lower in (t.get("description") or "").lower():
+                    t["similarity_score"] = 25
+                    scored.append(t)
+
+        scored.sort(key=lambda x: (x.get("similarity_score", 0), x.get("created_at", "")), reverse=True)
+        return scored[:limit]
 
     def get_confidential(self, user_role, user_id):
         query = get_supabase().table("tickets").select("*").eq("confidential", True)
@@ -321,6 +404,93 @@ class TicketRepository:
     def add_supporter(self, ticket_id, user_id):
         get_supabase().table("ticket_supporters").upsert({"ticket_id": ticket_id, "user_id": user_id}, on_conflict="ticket_id,user_id").execute()
 
+    def merge_tickets(self, target_id: str, duplicate_ids: list[str], admin_id: str, note: str = ""):
+        target = self.get_by_id(target_id)
+        if not target:
+            return None
+        
+        merged_dups = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        for dup_id in duplicate_ids:
+            if dup_id == target_id:
+                continue
+            dup = self.get_by_id(dup_id)
+            if not dup:
+                continue
+            
+            # 1. Transfer supporters/upvotes
+            try:
+                supporters = get_supabase().table("ticket_supporters").select("user_id").eq("ticket_id", dup_id).execute().data or []
+                for s in supporters:
+                    uid = s.get("user_id")
+                    if uid:
+                        self.add_supporter(target_id, uid)
+            except Exception:
+                pass
+            
+            # Also add duplicate creator as supporter of target if not already owner
+            if dup.get("owner_id") and dup.get("owner_id") != target.get("owner_id"):
+                try:
+                    self.add_supporter(target_id, dup.get("owner_id"))
+                except Exception:
+                    pass
+
+            # 2. Mark duplicate ticket as resolved/merged
+            remarks = f"Merged into ticket #{target_id}. {note}".strip()
+            try:
+                get_supabase().table("tickets").update({
+                    "status": "resolved",
+                    "updated_at": now_iso
+                }).eq("id", dup_id).execute()
+                get_supabase().table("ticket_history").insert({
+                    "ticket_id": dup_id,
+                    "status": "resolved",
+                    "remarks": remarks,
+                    "changed_by": admin_id
+                }).execute()
+            except Exception:
+                pass
+
+            # 3. Add system message in duplicate's chat thread
+            try:
+                get_supabase().table("messages").insert({
+                    "thread_id": dup_id,
+                    "sender_id": admin_id,
+                    "text": f"ℹ️ This ticket was marked as duplicate and merged into ticket #{target_id}. Your vote & updates are linked to the primary issue.",
+                    "is_system": True
+                }).execute()
+            except Exception:
+                pass
+
+            # 4. Add system message in target's chat thread
+            try:
+                dup_title = dup.get("title") or dup_id
+                get_supabase().table("messages").insert({
+                    "thread_id": target_id,
+                    "sender_id": admin_id,
+                    "text": f"ℹ️ Duplicate ticket #{dup_id} ('{dup_title}') was merged into this issue.",
+                    "is_system": True
+                }).execute()
+            except Exception:
+                pass
+            
+            merged_dups.append(dup_id)
+
+        # 5. Add history note to target ticket
+        if merged_dups:
+            try:
+                get_supabase().table("ticket_history").insert({
+                    "ticket_id": target_id,
+                    "status": target.get("status") or "submitted",
+                    "remarks": f"Merged {len(merged_dups)} duplicate ticket(s) ({', '.join(merged_dups)}). {note}".strip(),
+                    "changed_by": admin_id
+                }).execute()
+            except Exception:
+                pass
+
+        return self.get_by_id(target_id)
+
 class AppointmentRepository:
     def create(self, ticket_id, proposed_by, starts_at, ends_at):
         return get_supabase().table("ticket_appointments").insert({
@@ -422,13 +592,13 @@ class MessageRepository:
         thread_ids = list({r["thread_id"] for r in rows if r.get("thread_id")})
         if thread_ids:
             try:
-                tickets = get_supabase().table("tickets").select("id, title, category_id, sub_category, location, status").in_("id", thread_ids).execute().data or []
+                tickets = get_supabase().table("tickets").select("id, title, category_id, description, status").in_("id", thread_ids).execute().data or []
                 ticket_map = {t["id"]: t for t in tickets}
                 for r in rows:
                     t = ticket_map.get(r.get("thread_id"))
                     if t:
-                        r["ticket_title"] = t.get("title") or t.get("sub_category")
-                        r["ticket_location"] = t.get("location")
+                        r["ticket_title"] = t.get("title") or t.get("description", "")[:40]
+                        r["ticket_location"] = ""
                         r["ticket_status"] = t.get("status")
             except Exception:
                 pass
@@ -446,6 +616,24 @@ class MessageRepository:
         try:
             return get_supabase().table("messages").update({"read_at": datetime.now(timezone.utc).isoformat()}).eq("id", message_id).execute().data
         except Exception:
+            return []
+
+    def mark_thread_read(self, thread_id: str, reader_id: str | None = None, is_admin: bool = False):
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            rows = get_supabase().table("messages").select("id, sender_id, recipient_id, read_at").eq("thread_id", thread_id).execute().data or []
+            ids_to_update = []
+            for r in rows:
+                if reader_id and r.get("sender_id") == reader_id:
+                    continue
+                if not r.get("read_at"):
+                    if is_admin or not r.get("recipient_id") or r.get("recipient_id") == reader_id:
+                        ids_to_update.append(r["id"])
+            if ids_to_update:
+                return get_supabase().table("messages").update({"read_at": now_iso}).in_("id", ids_to_update).execute().data or []
+            return []
+        except Exception as e:
+            logger.error(f"Error marking thread {thread_id} read: {e}")
             return []
 
     def create(self, message_data):
