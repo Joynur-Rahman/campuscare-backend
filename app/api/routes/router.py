@@ -410,8 +410,24 @@ def submit_feedback(ticket_id: str, data: FeedbackCreate, user: dict = Depends(c
     ticket = ticket_repo.get_by_id(ticket_id)
     if not ticket:
         raise HTTPException(404, "Ticket not found")
-    if ticket["owner_id"] != user["clerk_id"] or ticket["status"] != TicketStatus.resolved.value:
-        raise HTTPException(400, "Only the owner can provide feedback after resolution")
+        
+    status_lower = str(ticket.get("status", "")).lower().strip()
+    if status_lower not in (TicketStatus.resolved.value, "fixed", "done"):
+        raise HTTPException(400, "Feedback can only be provided after the issue has been resolved")
+
+    is_owner = ticket.get("owner_id") == user["clerk_id"]
+    is_supporter = False
+    if not is_owner and not ticket.get("confidential"):
+        try:
+            sup_res = get_supabase().table("ticket_supporters").select("user_id").eq("ticket_id", ticket_id).eq("user_id", user["clerk_id"]).maybe_single().execute()
+            is_supporter = bool(sup_res and sup_res.data)
+        except Exception:
+            is_supporter = False
+
+    is_admin = user.get("role") == Role.administrator.value
+    if not is_owner and not is_supporter and not is_admin:
+        raise HTTPException(403, "Only the reporter or affected students can provide feedback")
+
     result = feedback_repo.submit(ticket_id, user["clerk_id"], data.rating, data.comment)
     if not result:
         raise HTTPException(502, "Feedback could not be saved")
