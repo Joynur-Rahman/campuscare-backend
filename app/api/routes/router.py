@@ -610,7 +610,8 @@ def get_thread(thread_id: str, user: dict = Depends(current_supabase_user)) -> l
     is_admin = user.get("role") == Role.administrator.value
     ticket = None
     try:
-        ticket = ticket_repo.get_by_id(thread_id)
+        res = get_supabase().table("tickets").select("id, owner_id, assigned_to, title, description").eq("id", thread_id).maybe_single().execute()
+        ticket = res.data if res else None
     except Exception:
         ticket = None
 
@@ -660,7 +661,8 @@ def send_message(request: Request, data: MessageCreate, user: dict = Depends(cur
     ticket = None
     if data.thread_id:
         try:
-            ticket = ticket_repo.get_by_id(data.thread_id)
+            res = get_supabase().table("tickets").select("id, owner_id, assigned_to, title, description").eq("id", data.thread_id).maybe_single().execute()
+            ticket = res.data if res else None
         except Exception:
             ticket = None
 

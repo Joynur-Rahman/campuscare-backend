@@ -10,6 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from app.api.routes.router import limiter
 
 
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 
@@ -18,6 +19,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 class SecurityHeadersMiddleware:
     async def __call__(self, request: Request, call_next):

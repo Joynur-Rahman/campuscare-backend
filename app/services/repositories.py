@@ -1,23 +1,82 @@
 import re
+import time
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from app.core.supabase import get_supabase
 from app.schemas import Role, TicketStatus
+from functools import lru_cache
+
+_USER_CACHE: dict[str, tuple[dict, float]] = {}  # clerk_id -> (profile_dict, expires_timestamp)
+_CAT_CACHE = {"data": {}, "expires": 0.0}
+_DEPT_CACHE = {"data": {}, "expires": 0.0}
+_SETTINGS_CACHE = {"config": None, "expires": 0.0}
+
+def get_cached_categories():
+    now = time.time()
+    if now < _CAT_CACHE["expires"] and _CAT_CACHE["data"]:
+        return _CAT_CACHE["data"]
+    try:
+        cats = get_supabase().table("categories").select("id, name").execute().data or []
+        _CAT_CACHE["data"] = {c["id"]: c["name"] for c in cats if "id" in c and "name" in c}
+        _CAT_CACHE["expires"] = now + 300.0  # cache for 5 min
+    except Exception:
+        pass
+    return _CAT_CACHE["data"]
+
+def get_cached_departments():
+    now = time.time()
+    if now < _DEPT_CACHE["expires"] and _DEPT_CACHE["data"]:
+        return _DEPT_CACHE["data"]
+    try:
+        depts = get_supabase().table("departments").select("id, name").execute().data or []
+        _DEPT_CACHE["data"] = {d["id"]: d["name"] for d in depts if "id" in d and "name" in d}
+        _DEPT_CACHE["expires"] = now + 300.0  # cache for 5 min
+    except Exception:
+        pass
+    return _DEPT_CACHE["data"]
+
+@lru_cache(maxsize=256)
+def _cached_user(clerk_id: str):
+    """Cache lightweight user profile look‑ups to avoid N+1 DB calls."""
+    res = get_supabase().table("users")\
+        .select("clerk_id,full_name,email,role")\
+        .eq("clerk_id", clerk_id).maybe_single().execute()
+    return res.data if res else None
 
 class UserRepository:
     def get_by_clerk_id(self, clerk_id: str):
+        now = time.time()
+        cached = _USER_CACHE.get(clerk_id)
+        if cached and now < cached[1]:
+            return cached[0]
         res = get_supabase().table("users").select("*").eq("clerk_id", clerk_id).maybe_single().execute()
-        return res.data if res else None
+        data = res.data if res else None
+        if data:
+            _USER_CACHE[clerk_id] = (data, now + 120.0)  # cache for 2 minutes
+        return data
 
     def create(self, profile_data: dict):
+        cid = profile_data.get("clerk_id")
+        if cid:
+            _USER_CACHE.pop(cid, None)
+            _cached_user.cache_clear()
         return get_supabase().table("users").insert(profile_data).execute().data
 
     def update(self, clerk_id: str, updates: dict):
+        _USER_CACHE.pop(clerk_id, None)
+        _cached_user.cache_clear()
         return get_supabase().table("users").update(updates).eq("clerk_id", clerk_id).execute().data
 
     def upsert(self, profile_data: dict):
+        cid = profile_data.get("clerk_id")
+        if cid:
+            _USER_CACHE.pop(cid, None)
+            _cached_user.cache_clear()
         return get_supabase().table("users").upsert(profile_data, on_conflict="clerk_id").execute().data
 
     def delete(self, clerk_id: str):
+        _USER_CACHE.pop(clerk_id, None)
+        _cached_user.cache_clear()
         return get_supabase().table("users").delete().eq("clerk_id", clerk_id).execute().data
 
     def get_admin_emails(self):
@@ -73,33 +132,35 @@ class TicketRepository:
             media_map = {}
             feedback_map = {}
             if ticket_ids:
-                try:
-                    all_media = get_supabase().table("ticket_media").select("*").in_("ticket_id", ticket_ids).execute().data or []
-                    for m in all_media:
-                        tid = m.get("ticket_id")
-                        if tid not in media_map:
-                            media_map[tid] = []
-                        media_map[tid].append(m)
-                except Exception:
-                    pass
-                try:
-                    all_fb = get_supabase().table("feedback").select("*").in_("ticket_id", ticket_ids).execute().data or []
-                    for fb in all_fb:
-                        feedback_map[fb.get("ticket_id")] = fb
-                except Exception:
-                    pass
-            cat_map = {}
-            dept_map = {}
-            try:
-                cats = get_supabase().table("categories").select("id, name").execute().data or []
-                cat_map = {c["id"]: c["name"] for c in cats if "id" in c and "name" in c}
-            except Exception:
-                pass
-            try:
-                depts = get_supabase().table("departments").select("id, name").execute().data or []
-                dept_map = {d["id"]: d["name"] for d in depts if "id" in d and "name" in d}
-            except Exception:
-                pass
+                def _fetch_media():
+                    try:
+                        return get_supabase().table("ticket_media").select("*").in_("ticket_id", ticket_ids).execute().data or []
+                    except Exception:
+                        return []
+
+                def _fetch_feedback():
+                    try:
+                        return get_supabase().table("feedback").select("*").in_("ticket_id", ticket_ids).execute().data or []
+                    except Exception:
+                        return []
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    f_media = executor.submit(_fetch_media)
+                    f_fb = executor.submit(_fetch_feedback)
+                    all_media = f_media.result()
+                    all_fb = f_fb.result()
+
+                for m in all_media:
+                    tid = m.get("ticket_id")
+                    if tid not in media_map:
+                        media_map[tid] = []
+                    media_map[tid].append(m)
+
+                for fb in all_fb:
+                    feedback_map[fb.get("ticket_id")] = fb
+
+            cat_map = get_cached_categories()
+            dept_map = get_cached_departments()
 
             for t in data:
                 supporters = [s["user_id"] for s in t.pop("ticket_supporters", []) if isinstance(s, dict) and "user_id" in s]
@@ -161,12 +222,7 @@ class TicketRepository:
         except Exception:
             pass
         
-        cat_map = {}
-        try:
-            cats = get_supabase().table("categories").select("id, name").execute().data or []
-            cat_map = {c["id"]: c["name"] for c in cats if "id" in c and "name" in c}
-        except Exception:
-            pass
+        cat_map = get_cached_categories()
 
         q_lower = (q or "").lower().strip()
         q_tokens = [tok for tok in re.findall(r"\w+", q_lower) if len(tok) >= 3 and tok not in {"the", "and", "for", "with", "this", "that", "issue", "problem"}]
@@ -552,18 +608,27 @@ class MessageRepository:
             return []
         if not rows:
             return []
+        
+        # Batch-fetch all senders in 1 single query instead of N serial queries
         sender_ids = list({r["sender_id"] for r in rows if r.get("sender_id")})
-        if sender_ids:
+        now = time.time()
+        missing_ids = [sid for sid in sender_ids if not (_USER_CACHE.get(sid) and now < _USER_CACHE[sid][1])]
+        if missing_ids:
             try:
-                users = get_supabase().table("users").select("clerk_id, full_name, email, role").in_("clerk_id", sender_ids).execute().data or []
-                user_map = {u["clerk_id"]: u for u in users}
-                for r in rows:
-                    u = user_map.get(r.get("sender_id"))
-                    if u:
-                        r["sender_name"] = u.get("full_name") or u.get("email", "").split("@")[0]
-                        r["sender_role"] = u.get("role")
+                users = get_supabase().table("users").select("clerk_id, full_name, email, role").in_("clerk_id", missing_ids).execute().data or []
+                for u in users:
+                    _USER_CACHE[u["clerk_id"]] = (u, now + 600.0)
             except Exception:
                 pass
+
+        for r in rows:
+            sid = r.get("sender_id")
+            if sid:
+                cached = _USER_CACHE.get(sid)
+                user = cached[0] if cached else _cached_user(sid)
+                if user:
+                    r["sender_name"] = user.get("full_name") or user.get("email", "").split("@")[0]
+                    r["sender_role"] = user.get("role")
         return rows
 
     def get_admin_messages(self, offset: int = 0, limit: int = 50):
@@ -574,21 +639,27 @@ class MessageRepository:
         if not rows:
             return []
 
-        # Populate sender details
+        now = time.time()
+        # Populate sender details with cache
         sender_ids = list({r["sender_id"] for r in rows if r.get("sender_id")})
-        if sender_ids:
+        missing_sids = [sid for sid in sender_ids if not (_USER_CACHE.get(sid) and now < _USER_CACHE[sid][1])]
+        if missing_sids:
             try:
-                users = get_supabase().table("users").select("clerk_id, full_name, email, role").in_("clerk_id", sender_ids).execute().data or []
-                user_map = {u["clerk_id"]: u for u in users}
-                for r in rows:
-                    u = user_map.get(r.get("sender_id"))
-                    if u:
-                        r["sender_name"] = u.get("full_name") or u.get("email", "").split("@")[0]
-                        r["sender_role"] = u.get("role")
+                users = get_supabase().table("users").select("clerk_id, full_name, email, role").in_("clerk_id", missing_sids).execute().data or []
+                for u in users:
+                    _USER_CACHE[u["clerk_id"]] = (u, now + 600.0)
             except Exception:
                 pass
+        for r in rows:
+            sid = r.get("sender_id")
+            if sid:
+                cached = _USER_CACHE.get(sid)
+                u = cached[0] if cached else None
+                if u:
+                    r["sender_name"] = u.get("full_name") or u.get("email", "").split("@")[0]
+                    r["sender_role"] = u.get("role")
 
-        # Populate ticket details if thread_id points to a ticket
+        # Populate ticket details if thread_id points to a ticket with cache
         thread_ids = list({r["thread_id"] for r in rows if r.get("thread_id")})
         if thread_ids:
             try:
@@ -684,6 +755,7 @@ class DepartmentRepository:
         return get_supabase().table("departments").select("*").order("name").execute().data or []
         
     def create(self, name, description):
+        _DEPT_CACHE["expires"] = 0.0
         return get_supabase().table("departments").insert({"name": name, "description": description}).execute().data
 
 class CategoryRepository:
@@ -691,6 +763,7 @@ class CategoryRepository:
         return get_supabase().table("categories").select("*").eq("department_id", department_id).order("name").execute().data or []
         
     def create(self, department_id, name, description):
+        _CAT_CACHE["expires"] = 0.0
         return get_supabase().table("categories").insert({"department_id": department_id, "name": name, "description": description}).execute().data
 
 department_repo = DepartmentRepository()
@@ -698,13 +771,25 @@ category_repo = CategoryRepository()
 
 class SettingsRepository:
     def get(self):
-        data = get_supabase().table("settings").select("*").eq("id", 1).execute().data
-        if not data:
-            get_supabase().table("settings").insert({"id": 1, "config": {}}).execute()
-            return {}
-        return data[0]["config"]
+        now = time.time()
+        if now < _SETTINGS_CACHE["expires"] and _SETTINGS_CACHE["config"] is not None:
+            return _SETTINGS_CACHE["config"]
+        try:
+            data = get_supabase().table("settings").select("*").eq("id", 1).execute().data
+            if not data:
+                get_supabase().table("settings").insert({"id": 1, "config": {}}).execute()
+                config = {}
+            else:
+                config = data[0]["config"] if data else {}
+            _SETTINGS_CACHE["config"] = config
+            _SETTINGS_CACHE["expires"] = now + 60.0  # cache 60s
+            return config
+        except Exception:
+            return _SETTINGS_CACHE["config"] or {}
         
     def update(self, config):
+        _SETTINGS_CACHE["config"] = config
+        _SETTINGS_CACHE["expires"] = time.time() + 60.0
         data = get_supabase().table("settings").upsert({"id": 1, "config": config, "updated_at": "now()"}).execute().data
         return data[0]["config"] if data else config
 
