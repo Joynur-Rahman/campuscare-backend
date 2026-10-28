@@ -162,13 +162,20 @@ create index if not exists tickets_assigned_to_idx on tickets(assigned_to);
 create index if not exists tickets_status_idx on tickets(status);
 create index if not exists tickets_department_id_idx on tickets(department_id);
 create index if not exists tickets_confidential_idx on tickets(confidential);
+create index if not exists tickets_created_at_idx on tickets(created_at desc);
+create index if not exists tickets_updated_at_idx on tickets(updated_at desc);
+create index if not exists tickets_owner_created_idx on tickets(owner_id, created_at desc);
+create index if not exists tickets_assigned_created_idx on tickets(assigned_to, created_at desc);
 create index if not exists ticket_history_ticket_id_idx on ticket_history(ticket_id);
+create index if not exists ticket_history_ticket_id_created_at_idx on ticket_history(ticket_id, created_at asc);
 create index if not exists ticket_followers_user_id_idx on ticket_followers(user_id);
 create index if not exists ticket_supporters_user_id_idx on ticket_supporters(user_id);
 create index if not exists ticket_media_ticket_id_idx on ticket_media(ticket_id);
 create index if not exists ticket_appointments_ticket_id_idx on ticket_appointments(ticket_id);
 create index if not exists messages_sender_id_idx on messages(sender_id);
 create index if not exists messages_recipient_id_idx on messages(recipient_id);
+create index if not exists messages_created_at_idx on messages(created_at asc);
+create index if not exists audit_logs_created_at_idx on audit_logs(created_at desc);
 
 alter table users enable row level security;
 alter table tickets enable row level security;
@@ -340,6 +347,7 @@ alter table messages add column if not exists thread_id uuid default gen_random_
 alter table messages add column if not exists parent_id uuid references messages(id);
 alter table messages add column if not exists read_at timestamptz;
 create index if not exists messages_thread_id_idx on messages(thread_id);
+create index if not exists messages_thread_created_idx on messages(thread_id, created_at asc);
 
 create table if not exists settings (
     id int primary key default 1 check (id = 1),
