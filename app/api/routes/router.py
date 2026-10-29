@@ -207,7 +207,6 @@ def create_ticket(request: Request, data: TicketCreate, user: dict = Depends(cur
     owner_id = user["clerk_id"]
     active_statuses = [
         TicketStatus.submitted.value,
-        TicketStatus.open.value,
         TicketStatus.assigned.value,
         TicketStatus.in_progress.value,
         TicketStatus.escalated.value,
