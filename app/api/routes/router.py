@@ -170,6 +170,26 @@ def update_profile(data: dict, user: dict = Depends(current_supabase_user)) -> d
         user_repo.update(user["clerk_id"], updates)
     return {**user, **updates}
 
+def _extract_room(text: str | None) -> str | None:
+    if not text:
+        return None
+    s = str(text)
+    loc_m = re.search(r'Location:\s*([^\n]+)', s, re.I)
+    target_str = loc_m.group(1) if loc_m else s
+    m = re.search(r'\b(?:room|lab|flat|cabin|office)\s*(?:no\.?|number)?\s*[:#-]?\s*([A-Za-z]?\s*[-#]?\s*[0-9]+[A-Za-z]?)\b', target_str, re.I)
+    if m:
+        return re.sub(r'[\s#]', '', m.group(1).upper().strip())
+    m2 = re.search(r'\b(?:r|rm)[\s.#-]*([0-9]{2,4}[a-z]?)\b', target_str, re.I)
+    if m2:
+        return m2.group(1).upper().strip()
+    m3 = re.search(r'\b(?:hostel|bh|gh|academic|block|flat|quarters|residence)\b[^,\n()]*?\b([0-9]{2,4}[a-z]?)\b', target_str, re.I)
+    if m3:
+        return m3.group(1).upper().strip()
+    m4 = re.search(r'\b(?:room|lab|flat|cabin|office)\s*(?:no\.?|number)?\s*[:#-]?\s*([A-Za-z]?\s*[-#]?\s*[0-9]+[A-Za-z]?)\b', s, re.I)
+    if m4:
+        return re.sub(r'[\s#]', '', m4.group(1).upper().strip())
+    return None
+
 def _is_uuid(val: str | None) -> bool:
     if not val:
         return False
@@ -213,23 +233,33 @@ def create_ticket(request: Request, data: TicketCreate, user: dict = Depends(cur
         TicketStatus.reopened.value,
     ]
     try:
-        existing = get_supabase().table("tickets").select("id, title, status").eq("owner_id", owner_id).in_("status", active_statuses).execute().data or []
+        existing = get_supabase().table("tickets").select("id, title, status, description").eq("owner_id", owner_id).in_("status", active_statuses).execute().data or []
+        new_room = _extract_room(data.description)
+        new_parts = re.split(r"[—–\-\ufffd|:]", data.title or "")
+        new_cat = re.sub(r"[^\w\s]", " ", (new_parts[0] if len(new_parts) >= 2 else "").lower()).strip()
+        new_sub = re.sub(r"[^\w\s]", " ", (new_parts[-1] if len(new_parts) >= 2 else (data.title or "")).lower()).strip()
         clean_new = re.sub(r"[^\w\s]", " ", (data.title or "").lower()).strip()
-        clean_new = re.sub(r"\s+", " ", clean_new)
-        new_sub = re.split(r"[—–\-\ufffd|:]", data.title or "")[-1].strip().lower()
-        new_sub = re.sub(r"[^\w\s]", " ", new_sub).strip()
 
         for t in existing:
-            clean_old = re.sub(r"[^\w\s]", " ", (t.get("title") or "").lower()).strip()
-            clean_old = re.sub(r"\s+", " ", clean_old)
-            old_sub = re.split(r"[—–\-\ufffd|:]", t.get("title") or "")[-1].strip().lower()
-            old_sub = re.sub(r"[^\w\s]", " ", old_sub).strip()
+            old_desc = t.get("description") or ""
+            old_title = t.get("title") or ""
+            old_room = _extract_room(old_desc)
 
-            if clean_new and clean_old:
-                if clean_new == clean_old or (len(clean_new) >= 6 and clean_new in clean_old) or (len(clean_old) >= 6 and clean_old in clean_new):
+            # If both tickets specify a room and they are different rooms -> not a duplicate
+            if new_room and old_room and new_room != old_room:
+                continue
+
+            old_parts = re.split(r"[—–\-\ufffd|:]", old_title)
+            old_cat = re.sub(r"[^\w\s]", " ", (old_parts[0] if len(old_parts) >= 2 else "").lower()).strip()
+            old_sub = re.sub(r"[^\w\s]", " ", (old_parts[-1] if len(old_parts) >= 2 else old_title).lower()).strip()
+            clean_old = re.sub(r"[^\w\s]", " ", old_title.lower()).strip()
+
+            same_cat = bool(new_cat and old_cat and (new_cat == old_cat or new_cat in old_cat or old_cat in new_cat)) or (not new_cat or not old_cat)
+            same_sub = bool(new_sub and old_sub and (new_sub == old_sub or new_sub in old_sub or old_sub in new_sub)) or (clean_new and clean_old and clean_new == clean_old)
+
+            if same_cat and same_sub:
+                if new_room and old_room and new_room == old_room:
                     raise HTTPException(400, "You already have an active ticket for this issue. Duplicate submissions are not allowed.")
-            if new_sub and old_sub and len(new_sub) >= 4 and new_sub == old_sub:
-                raise HTTPException(400, "You already have an active ticket for this issue. Duplicate submissions are not allowed.")
     except HTTPException:
         raise
     except Exception:
