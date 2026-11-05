@@ -190,6 +190,23 @@ def _extract_room(text: str | None) -> str | None:
         return re.sub(r'[\s#]', '', m4.group(1).upper().strip())
     return None
 
+def _extract_floor(text: str | None) -> str | None:
+    if not text:
+        return None
+    s = str(text)
+    loc_m = re.search(r'Location:\s*([^\n]+)', s, re.I)
+    target_str = loc_m.group(1) if loc_m else s
+    if re.search(r'\b(?:ground|gf)\b', target_str, re.I):
+        return 'Ground Floor'
+    m = re.search(r'\b([0-9])(?:st|nd|rd|th)?\s*floor\b', target_str, re.I)
+    if m:
+        n = m.group(1)
+        suffix = 'st' if n == '1' else ('nd' if n == '2' else ('rd' if n == '3' else 'th'))
+        return f"{n}{suffix} Floor"
+    if re.search(r'\bbasement\b', target_str, re.I):
+        return 'Basement'
+    return None
+
 def _is_uuid(val: str | None) -> bool:
     if not val:
         return False
@@ -235,6 +252,7 @@ def create_ticket(request: Request, data: TicketCreate, user: dict = Depends(cur
     try:
         existing = get_supabase().table("tickets").select("id, title, status, description").eq("owner_id", owner_id).in_("status", active_statuses).execute().data or []
         new_room = _extract_room(data.description)
+        new_floor = _extract_floor(data.description)
         new_parts = re.split(r"[—–\-\ufffd|:]", data.title or "")
         new_cat = re.sub(r"[^\w\s]", " ", (new_parts[0] if len(new_parts) >= 2 else "").lower()).strip()
         new_sub = re.sub(r"[^\w\s]", " ", (new_parts[-1] if len(new_parts) >= 2 else (data.title or "")).lower()).strip()
@@ -244,9 +262,14 @@ def create_ticket(request: Request, data: TicketCreate, user: dict = Depends(cur
             old_desc = t.get("description") or ""
             old_title = t.get("title") or ""
             old_room = _extract_room(old_desc)
+            old_floor = _extract_floor(old_desc)
 
             # If both tickets specify a room and they are different rooms -> not a duplicate
             if new_room and old_room and new_room != old_room:
+                continue
+
+            # If both tickets specify a floor and they are different floors -> not a duplicate
+            if new_floor and old_floor and new_floor != old_floor:
                 continue
 
             old_parts = re.split(r"[—–\-\ufffd|:]", old_title)
