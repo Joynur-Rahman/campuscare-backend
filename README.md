@@ -9,6 +9,7 @@ Built with Python 3.12, FastAPI, Supabase (PostgreSQL with Row Level Security), 
 ## 🚀 Features
 
 - **Robust Ticket Lifecycle Management**: Full state transition workflows (`submitted` ➔ `assigned` ➔ `in_progress` ➔ `resolved` / `reopened` / `escalated`) backed by PostgreSQL transactional RPCs.
+- **Intelligent Duplicate Prevention & Ticket Merging**: Deterministic room number (`_extract_room`) and floor (`_extract_floor`) extraction to block duplicate submissions from the same room/floor/category, and transactional duplicate ticket merging (`POST /api/tickets/{target_id}/merge`) transferring supporters, thread system notices, and audit logs.
 - **Threaded Ticket Messaging**: Real-time collaborative chat on tickets between students, assigned technicians, and administrators with role-aware access controls.
 - **Role-Based Access Control (RBAC)**: Enforced roles (`student`, `faculty`, `staff` / technician, `administrator`) with dependency-level route guards.
 - **Automatic Account Linking**: Seamlessly associates administrator pre-provisioned technician and staff accounts to Clerk accounts on their first sign-in.
@@ -194,8 +195,14 @@ Interactive Swagger documentation is available once the server is running:
 | **Auth** | `GET` | `/api/auth/me` | Fetch and synchronize current user profile |
 | **Auth** | `GET` | `/api/auth/session` | Validate Clerk JWT session |
 | **Tickets** | `GET` | `/api/tickets` | List tickets (filtered by user role/ownership) |
-| **Tickets** | `POST` | `/api/tickets` | Create a new ticket with history |
+| **Tickets** | `POST` | `/api/tickets` | Create a new ticket with floor, room, & history |
 | **Tickets** | `PUT` | `/api/tickets/{id}/status` | Update ticket status with remarks & media |
+| **Tickets** | `POST` | `/api/tickets/{id}/acknowledge` | Technician claims / acknowledges ticket |
+| **Tickets** | `POST` | `/api/tickets/{target_id}/merge` | Merge duplicate tickets into primary ticket |
+| **Appointments** | `POST` | `/api/tickets/{id}/appointment` | Technician proposes visit appointment slot |
+| **Appointments** | `PUT` | `/api/tickets/{id}/appointment` | Student accepts or declines appointment slot |
+| **Feedback** | `POST` | `/api/tickets/{id}/feedback` | Student submits post-resolution rating & review |
+| **Social** | `POST` | `/api/tickets/{id}/join` | Upvote/support an existing public ticket |
 | **Messages** | `GET` | `/api/messages/thread/{id}` | Fetch chat thread history for a ticket |
 | **Messages** | `POST` | `/api/messages` | Send a message to a ticket thread or user |
 | **Staff** | `GET` | `/api/staff/technicians` | List available technicians |
